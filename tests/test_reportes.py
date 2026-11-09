@@ -1,15 +1,18 @@
+import json
 from datetime import date, datetime
 from decimal import Decimal
 from io import BytesIO
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+import pytest
 from openpyxl import load_workbook
 from pydantic import ValidationError
 
 from app.modules.inteligencia.exports.reporte_excel import crear_excel
 from app.modules.inteligencia.exports.reporte_pdf import crear_pdf
 from app.modules.inteligencia.schemas.reportes.reporte_request import ReporteRequest
-from app.modules.inteligencia.services import reporte_service
+from app.modules.inteligencia.services import reporte_service, reporte_vertex_service
 
 
 def test_rango_invertido_no_se_acepta():
@@ -27,6 +30,63 @@ def test_voz_interpreta_inventario_sin_confundirlo_con_ventas(monkeypatch):
     assert respuesta["filtros"]["tipo"] == "INVENTARIO"
     assert respuesta["filtros"]["solo_bajo_stock"] is True
     assert respuesta["filtros"]["sucursal_id"] == 1
+
+
+@pytest.fixture
+def reportes_en_noviembre(monkeypatch):
+    class FechaFija(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 9, 10, tzinfo=tz)
+
+    monkeypatch.setattr(reporte_service, "datetime", FechaFija)
+    monkeypatch.setattr(reporte_service, "AI_REPORTS_PROVIDER", "RULES")
+    monkeypatch.setattr(reporte_service, "listar_sucursales", lambda _: [{"id": 1, "nombre": "Sucursal Centro"}])
+
+
+@pytest.mark.parametrize(("texto", "desde", "hasta"), [
+    ("Ventas del mes de septiembre", "2026-09-01", "2026-09-30"),
+    ("Ventas de setiembre de 2025", "2025-09-01", "2025-09-30"),
+    ("Ventas en febrero del año 2024", "2024-02-01", "2024-02-29"),
+    ("Ventas del 5 al 12 de septiembre", "2026-09-05", "2026-09-12"),
+    ("Ventas del mes pasado", "2026-10-01", "2026-10-31"),
+    ("Ventas de este mes", "2026-11-01", "2026-11-09"),
+])
+def test_interpretar_periodo_local(reportes_en_noviembre, texto, desde, hasta):
+    respuesta = reporte_service.interpretar(texto, 1)
+    assert respuesta["interpretado"] is True
+    filtros = respuesta["filtros"]
+    assert (filtros["fecha_desde"], filtros["fecha_hasta"]) == (desde, hasta)
+
+
+@pytest.mark.parametrize(("periodo", "fechas_gemini", "fechas_esperadas"), [
+    ("del mes de septiembre", ("2026-11-01", "2026-11-30"), ("2026-09-01", "2026-09-30")),
+    ("del 5 al 12 de septiembre", ("2026-09-05", "2026-09-12"), ("2026-09-05", "2026-09-12")),
+    ("de septiembre a octubre", ("2026-09-01", "2026-10-31"), ("2026-09-01", "2026-10-31")),
+])
+def test_interpretar_periodo_con_gemini(monkeypatch, reportes_en_noviembre, periodo, fechas_gemini, fechas_esperadas):
+    from google import genai
+
+    filtros_gemini = {
+        "tipo": "VENTAS", "fecha_desde": fechas_gemini[0], "fecha_hasta": fechas_gemini[1],
+        "sucursal_id": 1, "estado": "COMPLETADA",
+    }
+    respuesta_gemini = json.dumps({"interpretado": True, "filtros": filtros_gemini})
+
+    def generar(**_):
+        return SimpleNamespace(text=respuesta_gemini)
+
+    monkeypatch.setattr(genai, "Client", lambda **_: SimpleNamespace(models=SimpleNamespace(generate_content=generar)))
+    monkeypatch.setattr(reporte_service, "AI_REPORTS_PROVIDER", "GEMINI")
+    monkeypatch.setattr(reporte_vertex_service, "AI_REPORTS_PROVIDER", "GEMINI")
+    monkeypatch.setattr(reporte_vertex_service, "GEMINI_API_KEY", "clave-de-prueba")
+
+    respuesta = reporte_service.interpretar(f"Ventas {periodo} en Sucursal Centro", 1)
+    assert respuesta["interpretado"] is True
+    assert respuesta["motor"] == "gemini"
+    filtros = respuesta["filtros"]
+    assert (filtros["fecha_desde"], filtros["fecha_hasta"]) == fechas_esperadas
+    assert (filtros["tipo"], filtros["sucursal_id"], filtros["estado"]) == ("VENTAS", 1, "COMPLETADA")
 
 
 def test_ventas_y_exportaciones_comparten_los_totales(monkeypatch):

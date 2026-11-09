@@ -18,6 +18,7 @@ from app.modules.inteligencia.repositories.reporte_repository import (
     listar_sucursales,
     marcar_ejecucion_reporte_programado,
 )
+from app.modules.inteligencia.services.reporte_periodo import MESES, rango_mes_explicito
 from app.modules.inteligencia.services.reporte_vertex_service import interpretar_con_vertex
 from app.modules.inteligencia.schemas.reportes.reporte_request import (
     CrearReporteProgramadoRequest,
@@ -153,16 +154,20 @@ def _interpretar_por_reglas(texto: str, empresa_id: int, sucursal_permitida=None
             inicio, fin = (date(int(a[2]), int(a[1]), int(a[0])) for a in fechas)
         except ValueError:
             return {"interpretado": False, "advertencias": ["Las fechas dictadas no son válidas."], "filtros": None}
-    meses = {"enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6, "julio": 7, "agosto": 8, "septiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12}
     rango_texto = re.search(r"\bdel?\s+(\d{1,2})\s+al\s+(\d{1,2})\s+de\s+(\w+)(?:\s+de\s+(\d{4}))?", normal)
-    if rango_texto and rango_texto.group(3) in meses:
+    mes_completo = None
+    if rango_texto and rango_texto.group(3) in MESES:
         try:
             ano = int(rango_texto.group(4) or hoy.year)
-            mes = meses[rango_texto.group(3)]
+            mes = MESES[rango_texto.group(3)]
             inicio = date(ano, mes, int(rango_texto.group(1)))
             fin = date(ano, mes, int(rango_texto.group(2)))
         except ValueError:
             return {"interpretado": False, "advertencias": ["El rango dictado no es válido."], "filtros": None}
+    elif not fechas:
+        mes_completo = rango_mes_explicito(texto, hoy)
+        if mes_completo:
+            inicio, fin = mes_completo
     palabras = [
         ("PRODUCTOS_MAS_VENDIDOS", ("mas vendido", "mejor vendido", "top producto")),
         ("VENTAS", ("venta", "ventas", "ingreso", "ingresos")),
@@ -180,6 +185,7 @@ def _interpretar_por_reglas(texto: str, empresa_id: int, sucursal_permitida=None
     tiene_fecha_explicita = bool(
         fechas
         or rango_texto
+        or mes_completo
         or any(p in normal for p in ("hoy", "esta semana", "semana pasada", "este mes", "mes pasado", "este ano", "este año"))
     )
     if tipo == "USUARIOS" and not tiene_fecha_explicita:

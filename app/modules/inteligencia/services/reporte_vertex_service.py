@@ -11,6 +11,7 @@ from app.core.config import (
     VERTEX_PROJECT_ID,
 )
 from app.modules.inteligencia.schemas.reportes.reporte_request import ReporteRequest
+from app.modules.inteligencia.services.reporte_periodo import rango_mes_explicito
 
 
 TIPOS_DISPONIBLES = [
@@ -54,6 +55,10 @@ def _normalizar_filtros_vertex(filtros: dict[str, object], texto: str, hoy: date
         resultado["fecha_hasta"] = hoy.isoformat()
     if any(p in normal for p in ("hasta hoy", "a hoy", "al dia de hoy", "al día de hoy", "esta semana", "este mes")):
         resultado["fecha_hasta"] = hoy.isoformat()
+    if periodo := rango_mes_explicito(texto, hoy):
+        inicio, fin = periodo
+        resultado["fecha_desde"] = inicio.isoformat()
+        resultado["fecha_hasta"] = fin.isoformat()
 
     for campo in ("estado", "metodo_pago", "proveedor_pago", "rol"):
         valor = resultado.get(campo)
@@ -138,6 +143,7 @@ Reglas obligatorias:
 - Responde SOLO un JSON, sin markdown, sin explicación.
 - Si no entiendes el tipo de reporte, usa interpretado=false.
 - fecha_desde y fecha_hasta deben ir en formato YYYY-MM-DD.
+- Si se solicita un mes completo por nombre, usa su primer y último día. Si no se indica el año, usa el año actual.
 - Si el reporte es USUARIOS y el usuario no pide fechas, usa fecha_desde=2020-01-01 y fecha_hasta=fecha actual.
 - Si el usuario dice "todas las sucursales", sucursal_id debe ser null.
 - Si menciona una sucursal existente, usa su id exacto.
