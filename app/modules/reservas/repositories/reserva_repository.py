@@ -1367,7 +1367,7 @@ def _validar_items_reserva(items: list[dict[str, object]], sucursal_id: int) -> 
         cantidades_por_variante[variante_id] = cantidades_por_variante.get(variante_id, 0) + cantidad
 
     if any(cantidad > 2 for cantidad in cantidades_por_variante.values()):
-        raise ValueError("No puedes reservar mas de 2 unidades de la misma prenda.")
+        raise ValueError("Puedes reservar hasta 2 unidades por variante (mismo modelo, talla y color).")
 
 
 def _vencer_reservas_expiradas_cursor(cursor, empresa_id: int) -> None:
