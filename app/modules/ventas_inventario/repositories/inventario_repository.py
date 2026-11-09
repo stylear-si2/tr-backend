@@ -521,7 +521,14 @@ def crear_venta_presencial(
             (subtotal_total, descuento_total, total, venta_id, empresa_id),
         )
         from app.modules.ventas_inventario.repositories.nota_venta_repository import emitir_nota_cursor
-        emitir_nota_cursor(cursor,venta_id,empresa_id)
+        from app.modules.ventas_inventario.services.comprobante_pago_service import encolar_venta
+        from app.modules.ventas_inventario.services.notificaciones_service import emitir_cliente
+        nota = emitir_nota_cursor(cursor,venta_id,empresa_id)
+        encolar_venta(cursor, empresa_id, venta_id, nota=nota)
+        if cliente_id is not None and total > 0:
+            emitir_cliente(cursor, empresa_id, cliente_id, f'venta-pagada:{venta_id}',
+                           'Venta confirmada', f'Tu pago en caja por la venta {codigo} fue registrado.',
+                           'COMPRA', 'VENTA', venta_id)
         finalizar_operacion(cursor,empresa_id,usuario_id,'VENTA',clave_operacion,datos,venta_id)
         auditar_operacion(cursor,usuario_id,empresa_id,'VENTA_PRESENCIAL',f'Venta {codigo}, sucursal {sucursal_id}, total {total}.')
         connection.commit()

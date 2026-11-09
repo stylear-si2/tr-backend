@@ -238,7 +238,8 @@ class CheckoutPlanRequest(BaseModel):
 
 @router.post('/mi-empresa/suscripcion/stripe/checkout')
 def checkout_suscripcion_stripe(datos: CheckoutPlanRequest | None = None, usuario=Depends(requerir_admin)):
-    return suscripcion_stripe_service.checkout(exigir_empresa_id(usuario), datos.plan_id if datos else None)
+    return suscripcion_stripe_service.checkout(exigir_empresa_id(usuario), datos.plan_id if datos else None,
+                                                usuario_pagador=usuario['id'])
 
 
 @router.post('/mi-empresa/suscripcion/stripe/portal')

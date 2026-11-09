@@ -1,6 +1,7 @@
 """Solo la base local desechable explicitada; correo y R2 siempre simulados."""
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 import hashlib
 import hmac
 from io import BytesIO
@@ -143,6 +144,14 @@ def test_stripe_cobra_plan_mensual_y_renueva_solo_la_empresa_correcta(empresas, 
         for dias in (30, 60, 30, 60):
             respuesta = enviar('invoice.paid', factura(dias))
             assert respuesta.status_code == 200, respuesta.text
+        comprobantes = consulta('SELECT datos FROM comprobante_pago_envio WHERE empresa_id=%s ORDER BY id', (a['id'],))
+        assert len(comprobantes) == 2
+        for fila in comprobantes:
+            datos = fila['datos']
+            assert datos['moneda'] == 'USD' and Decimal(datos['total']) == 90
+            assert datos['lineas'][0][0] == f"Plan {plan['nombre']}"
+        assert len(consulta("SELECT id FROM notificacion_usuario WHERE empresa_id=%s AND usuario_id=%s AND titulo='Pago del plan confirmado'",
+                            (a['id'], a['admin_usuario_id']))) == 2
         vence = saas.obtener_plan_empresa(a['id'])['fecha_vencimiento']
         assert vence >= hoy.date() + timedelta(days=59)
         assert saas.obtener_plan_empresa(b['id'])['fecha_vencimiento'] == antes_b

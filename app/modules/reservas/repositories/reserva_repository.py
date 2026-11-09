@@ -648,9 +648,11 @@ def finalizar_reserva_como_venta(
         )
 
         from app.modules.ventas_inventario.repositories.nota_venta_repository import emitir_nota_cursor
+        from app.modules.ventas_inventario.services.comprobante_pago_service import encolar_venta
         cursor.execute('UPDATE reserva SET finalizacion_datos=%s WHERE id=%s AND empresa_id=%s',
                        (Json(datos_finalizacion),reserva_id,empresa_id))
-        emitir_nota_cursor(cursor, venta_id, empresa_id)
+        nota = emitir_nota_cursor(cursor, venta_id, empresa_id)
+        encolar_venta(cursor, empresa_id, venta_id, nota=nota, reserva_id=reserva_id)
         from app.modules.ventas_inventario.services.notificaciones_service import avisar_reserva
         avisar_reserva(cursor,reserva_id,'COMPLETADA')
         connection.commit()
@@ -1055,7 +1057,8 @@ def _crear_o_completar_venta_reserva(
                 proveedor,
                 fecha_pago
             )
-            VALUES (%s, %s, %s, %s, 'RESERVA_SALDO', %s, 'BOB', %s, 'PAGADO', %s, CURRENT_TIMESTAMP);
+            VALUES (%s, %s, %s, %s, 'RESERVA_SALDO', %s, 'BOB', %s, 'PAGADO', %s, CURRENT_TIMESTAMP)
+            RETURNING *;
             """,
             (
                 empresa_id,
@@ -1067,6 +1070,8 @@ def _crear_o_completar_venta_reserva(
                 "MANUAL",
             ),
         )
+        from app.modules.ventas_inventario.services.comprobante_pago_service import encolar_venta
+        encolar_venta(cursor, empresa_id, venta_id, orden=cursor.fetchone(), reserva_id=reserva_id)
         connection.commit()
         return {"reserva": _obtener_reserva_por_id_cursor(cursor, reserva_id, empresa_id), "orden": None}
     except Exception:
@@ -1118,6 +1123,8 @@ def _confirmar_anticipo_reserva_cursor(cursor, connection, orden: dict[str, obje
     from app.modules.ventas_inventario.services.notificaciones_service import avisar_reserva
     avisar_reserva(cursor,reserva_id,'ANTICIPO_PAGADO')
     resultado = _obtener_orden_pago_cursor(cursor, int(orden["id"]))
+    from app.modules.ventas_inventario.services.comprobante_pago_service import encolar_anticipo
+    encolar_anticipo(cursor, resultado)
     connection.commit()
     return resultado
 
@@ -1207,6 +1214,8 @@ def _confirmar_saldo_reserva_cursor(
         (orden["id"],),
     )
     resultado = _obtener_orden_pago_cursor(cursor, int(orden["id"]))
+    from app.modules.ventas_inventario.services.comprobante_pago_service import encolar_venta
+    encolar_venta(cursor, orden['empresa_id'], orden['venta_id'], orden=resultado, reserva_id=reserva_id)
     connection.commit()
     return resultado
 

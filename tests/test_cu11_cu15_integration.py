@@ -118,6 +118,9 @@ def test_cajero_gestiona_solo_su_reserva_y_no_completa_sin_venta(api,empresas):
     assert final.json()['estado']=='COMPLETADA'
     assert api.post(url+'/finalizar-venta',headers=hc,json=datos).json()['venta_id']==final.json()['venta_id']
     assert len(consulta('SELECT id FROM nota_venta WHERE empresa_id=%s',(a['id'],)))==1
+    pagos = consulta('SELECT datos FROM comprobante_pago_envio WHERE empresa_id=%s', (a['id'],))
+    assert len(pagos) == 1 and pagos[0]['datos']['titulo'] == 'Pago final de reserva'
+    assert ['Reserva', r['codigo']] in pagos[0]['datos']['referencias']
     assert consulta('SELECT stock_reservado,stock_disponible FROM inventario_sucursal WHERE producto_variante_id=%s',(vid,),True)=={'stock_reservado':0,'stock_disponible':3}
 
 
@@ -129,6 +132,8 @@ def test_venta_reintento_descuento_aislamiento_y_pdf(api,empresas,monkeypatch):
     clave=str(uuid4());r=venta(api,ha,sid,vid,clave_operacion=clave,cliente_id=cid)
     assert r.status_code==200,r.text
     assert venta(api,ha,sid,vid,clave_operacion=clave,cliente_id=cid).json()['id']==r.json()['id']
+    assert len(consulta('SELECT id FROM comprobante_pago_envio WHERE empresa_id=%s', (a['id'],))) == 1
+    assert len(consulta("SELECT id FROM notificacion_usuario WHERE empresa_id=%s AND clave LIKE 'venta-pagada:%%'", (a['id'],))) == 1
     url=f'/api/v1/ventas-presenciales/{r.json()["id"]}/nota.pdf'
     pdf=api.get(url,headers=ha);assert pdf.status_code==200,pdf.text
     texto=''.join(p.extract_text() for p in PdfReader(BytesIO(pdf.content)).pages)

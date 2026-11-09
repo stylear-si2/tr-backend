@@ -112,7 +112,7 @@ def estado(empresa):
     }
 
 
-def checkout(empresa, plan_id=None):
+def checkout(empresa, plan_id=None, *, usuario_pagador=None):
     if not _stripe_configurado():
         raise HTTPException(503, 'Configura Stripe de prueba y su webhook para cobrar la suscripción.')
     clave = _clave()
@@ -142,10 +142,10 @@ def checkout(empresa, plan_id=None):
             if not _precio_contratable(destino):
                 raise HTTPException(409, 'El plan elegido no está habilitado para cobro mensual.')
             cur.execute("""INSERT INTO suscripcion_stripe
-                           (id,empresa_id,suscripcion_id,plan_destino_id,stripe_price_id,importe,moneda)
-                           VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+                           (id,empresa_id,suscripcion_id,plan_destino_id,stripe_price_id,importe,moneda,usuario_pagador_id)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
                         (str(uuid4()), empresa, plan['suscripcion_id'], destino_id,
-                         destino['stripe_price_id'], destino['precio'], destino['moneda']))
+                         destino['stripe_price_id'], destino['precio'], destino['moneda'], usuario_pagador))
             intento = cur.fetchone()
     if intento['checkout_url']:
         return {'url': intento['checkout_url']}
@@ -285,18 +285,20 @@ def _comprobante(factura):
 
 def _aplicar_periodo(cur, intento, suscripcion, factura):
     lineas = (factura.get('lines') or {}).get('data', [])
-    finales = []
+    periodos = []
     for linea in lineas:
         precio = (linea.get('price') or {}).get('id')
         precio = precio or ((linea.get('pricing') or {}).get('price_details') or {}).get('price')
         detalles = (linea.get('parent') or {}).get('subscription_item_details') or {}
-        fin = (linea.get('period') or {}).get('end')
+        periodo = linea.get('period') or {}
+        fin = periodo.get('end')
         if (precio == intento['stripe_price_id'] and not linea.get('proration')
                 and not detalles.get('proration') and isinstance(fin, int)):
-            finales.append(fin)
-    if not finales:
+            periodos.append(periodo)
+    if not periodos:
         raise HTTPException(409, 'La factura no incluye el periodo del precio contratado.')
-    hasta = datetime.fromtimestamp(max(finales), timezone.utc)
+    periodo = max(periodos, key=lambda p: p['end'])
+    hasta = datetime.fromtimestamp(periodo['end'], timezone.utc)
     anterior = intento['pagado_hasta']
     if anterior and hasta <= anterior:
         return
@@ -328,3 +330,50 @@ def _aplicar_periodo(cur, intento, suscripcion, factura):
                    estado=CASE WHEN estado='CERRADA' THEN estado ELSE 'ACTIVA' END
                    WHERE id=%s""", (suscripcion, factura.get('customer'), suscripcion_id, hasta,
                                     _comprobante(factura), intento['id']))
+    _encolar_pago_plan(cur, intento, factura, suscripcion_id, periodo, vigencia)
+
+
+def _encolar_pago_plan(cur, intento, factura, suscripcion_id, periodo, vigencia):
+    from app.modules.ventas_inventario.services.comprobante_pago_service import encolar
+    from app.modules.ventas_inventario.services.notificaciones_service import emitir_usuario
+
+    pagado = factura.get('amount_paid')
+    if not isinstance(pagado, int) or pagado <= 0:
+        return
+    empresa = intento['empresa_id']
+    cur.execute('''
+        SELECT e.nombre AS empresa, p.nombre AS plan, s.fecha_inicio
+        FROM suscripcion s JOIN empresa e ON e.id=s.empresa_id
+        JOIN plan p ON p.id=s.plan_id WHERE s.id=%s AND s.empresa_id=%s
+    ''', (suscripcion_id, empresa))
+    datos_plan = cur.fetchone()
+    cur.execute('''
+        SELECT u.id, u.correo FROM usuario u
+        WHERE u.empresa_id=%s AND u.activo AND EXISTS (
+            SELECT 1 FROM usuario_rol ur JOIN rol r ON r.id=ur.rol_id
+            WHERE ur.usuario_id=u.id AND ur.activo AND r.activo AND r.nombre='ADMINISTRADOR'
+        )
+        ORDER BY (u.id=%s) DESC NULLS LAST, u.id LIMIT 1
+    ''', (empresa, intento.get('usuario_pagador_id')))
+    admin = cur.fetchone()
+    moneda = str(factura.get('currency') or intento['moneda']).lower()
+    total = Decimal(pagado) / (1 if moneda in MONEDAS_SIN_DECIMALES else 100)
+    inicio = periodo.get('start')
+    desde = (datetime.fromtimestamp(inicio, timezone.utc).astimezone(ZONA_EMPRESA).date()
+             if isinstance(inicio, int) else datos_plan['fecha_inicio'])
+    fecha_pago = (factura.get('status_transitions') or {}).get('paid_at')
+    fecha = (datetime.fromtimestamp(fecha_pago, timezone.utc) if isinstance(fecha_pago, int)
+             else datetime.now(timezone.utc))
+    referencia = factura.get('number') or factura.get('id') or f'PLAN-{suscripcion_id}'
+    clave = f"plan:{intento['id']}:{periodo['end']}"
+    encolar(cur, empresa, clave, admin['correo'] if admin else None, {
+        'titulo': 'Pago del plan de empresa', 'referencia': referencia,
+        'empresa': datos_plan['empresa'], 'emisor': 'StyleAR',
+        'fecha': fecha, 'moneda': moneda.upper(), 'total': total, 'metodo': 'Tarjeta · Stripe',
+        'referencias': [('Período cubierto', f'{desde:%d/%m/%Y} al {vigencia:%d/%m/%Y}')],
+        'lineas': [(f"Plan {datos_plan['plan']}", 1, total)],
+    })
+    if admin:
+        emitir_usuario(cur, empresa, admin['id'], clave, 'Pago del plan confirmado',
+                       f"Se confirmó el pago del plan {datos_plan['plan']} hasta el {vigencia:%d/%m/%Y}.",
+                       'PAGO')

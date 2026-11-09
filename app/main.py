@@ -179,7 +179,7 @@ def verificar_migracion_multitenant():
         for version in ('2026_11_05_cu25_respaldos_r2','2026_11_05_cu26_planes','2026_11_06_cu22_cu27_mejoras',
                         '2026_11_07_cu26_stripe','2026_11_08_cu21_offline','2026_11_08_cu19_prenda_adicional',
                         '2026_11_08_posventa_no_vendible','2026_11_08_cu26_planes_usd',
-                        '2026_11_08_cu26_contratacion_planes'):
+                        '2026_11_08_cu26_contratacion_planes','2026_11_09_comprobantes_pago'):
             cur.execute('SELECT 1 FROM schema_migrations WHERE version=%s',(version,))
             if cur.fetchone() is None:
                 raise RuntimeError(f'Falta la migración {version}; ejecute init_db.py antes de iniciar la API.')
@@ -203,6 +203,7 @@ async def iniciar_vencimientos():
     app.state.respaldos_automaticos = asyncio.create_task(ejecutar_respaldo_automatico())
     app.state.reportes_automaticos = asyncio.create_task(ejecutar_reportes_automaticos())
     app.state.push_automaticos = asyncio.create_task(ejecutar_push_automaticos())
+    app.state.comprobantes_automaticos = asyncio.create_task(ejecutar_comprobantes_automaticos())
 
 
 async def ejecutar_push_automaticos():
@@ -214,6 +215,18 @@ async def ejecutar_push_automaticos():
             await asyncio.to_thread(procesar)
         except Exception:
             logging.getLogger(__name__).error('No se pudo procesar la cola de avisos; se reintentará.')
+        await asyncio.sleep(10)
+
+
+async def ejecutar_comprobantes_automaticos():
+    import asyncio
+    import logging
+    from app.modules.ventas_inventario.services.comprobante_pago_service import procesar_envios
+    while True:
+        try:
+            await asyncio.to_thread(procesar_envios)
+        except Exception:
+            logging.getLogger(__name__).error('No se pudo procesar la cola de comprobantes.')
         await asyncio.sleep(10)
 
 
@@ -266,6 +279,11 @@ async def detener_vencimientos():
         push.cancel()
         with suppress(asyncio.CancelledError):
             await push
+    comprobantes = getattr(app.state, 'comprobantes_automaticos', None)
+    if comprobantes:
+        comprobantes.cancel()
+        with suppress(asyncio.CancelledError):
+            await comprobantes
 
 
 @app.get("/api/v1/db-check")

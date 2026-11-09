@@ -277,7 +277,8 @@ def procesar_evento(evento):
                         _aplicar_movimiento(cur,venta['usuario_id'],venta['sucursal_id'],detalle['producto_variante_id'],
                             'VENTA_DIGITAL',detalle['cantidad'],'Pago de prueba confirmado','VENTA',orden['venta_id'],empresa_id=empresa)
                     cur.execute("UPDATE venta SET estado='COMPLETADA',metodo_pago=%s WHERE id=%s AND empresa_id=%s",(orden['metodo'],orden['venta_id'],empresa))
-                    cur.execute("UPDATE orden_pago SET estado='PAGADO' WHERE id=%s",(orden['id'],))
+                    cur.execute("UPDATE orden_pago SET estado='PAGADO' WHERE id=%s RETURNING fecha_pago",(orden['id'],))
+                    orden['fecha_pago'] = cur.fetchone()['fecha_pago']
                     from .delivery_cu18_service import confirmar_cursor
                     confirmar_cursor(cur,orden)
                     # Retirar sólo las unidades que formaron esta compra, conservando adiciones posteriores.
@@ -286,6 +287,8 @@ def procesar_evento(evento):
                         cur.execute('''UPDATE carrito_item SET cantidad=GREATEST(cantidad-%s,1),activo=(cantidad>%s),fecha_actualizacion=CURRENT_TIMESTAMP
                             WHERE carrito_id=%s AND activo AND ((%s IS NOT NULL AND id=%s) OR (%s IS NULL AND producto_variante_id=%s AND paquete_id IS NULL))''',
                             (detalle['cantidad'],detalle['cantidad'],orden['carrito_origen_id'],detalle['carrito_item_origen_id'],detalle['carrito_item_origen_id'],detalle['carrito_item_origen_id'],detalle['producto_variante_id']))
+                    from .comprobante_pago_service import encolar_venta
+                    encolar_venta(cur, empresa, orden['venta_id'], orden=orden)
                     notificar(cur,orden,f"compra:{orden['id']}",'Compra confirmada','Tu pago fue confirmado y la compra se completó.')
                 except (ValueError,HTTPException) as error:
                     cur.execute('ROLLBACK TO SAVEPOINT venta_pagada')

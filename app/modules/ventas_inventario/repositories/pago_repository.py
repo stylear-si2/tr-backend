@@ -581,6 +581,11 @@ def marcar_orden_pagada(orden_id: int, usuario_id_movimiento: int | None = None,
                 (orden["cliente_id"],),
             )
             resultado = _obtener_orden_cursor(cursor, orden_id)
+            from app.modules.ventas_inventario.services.comprobante_pago_service import encolar_venta
+            from app.modules.ventas_inventario.services.pagos_empresa_service import notificar
+            encolar_venta(cursor, orden['empresa_id'], orden['venta_id'], orden=resultado)
+            notificar(cursor, orden, f'compra:{orden_id}', 'Compra confirmada',
+                      'Tu pago fue confirmado y la compra se completó.')
         connection.commit()
         return resultado
     except Exception:

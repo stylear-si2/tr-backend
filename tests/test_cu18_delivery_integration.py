@@ -43,6 +43,8 @@ def test_cotizacion_aceptada_y_delivery_solo_despues_de_pago(api,envio):
     assert api.get('/api/v1/delivery/mis-deliveries',headers=h).json()==[]
     # El checkout aceptado no vuelve a consultar ORS.
     for _ in range(2):assert api.post(f'/api/v1/pagos/qr/confirmar/{o["orden_id"]}',headers=h).status_code==200
+    recibos = consulta('SELECT datos FROM comprobante_pago_envio WHERE empresa_id=%s', (a['id'],))
+    assert len(recibos) == 1 and ['Envío a domicilio', '12.00'] in recibos[0]['datos']['importes']
     ds=api.get('/api/v1/delivery/mis-deliveries',headers=h).json();assert len(ds)==1 and ds[0]['pago_confirmado'] is True
     detalle=api.get(f'/api/v1/delivery/mis-deliveries/{ds[0]["id"]}',headers=h).json()
     assert len(detalle['historial'])==1 and detalle['ruta']==q['ruta'] and not detalle['puede_gestionar']

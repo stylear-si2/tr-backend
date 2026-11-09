@@ -20,18 +20,26 @@ class PreferenciasRequest(BaseModel):
 
 
 def emitir_cliente(cur, empresa_id, cliente_id, clave, titulo, mensaje, categoria, recurso_tipo, recurso_id, orden_id=None):
-    """La bandeja y su salida se insertan en la transacción del hecho comercial."""
-    if categoria not in CATEGORIAS or recurso_tipo not in DESTINOS or int(recurso_id)<=0:
-        raise ValueError('Categoría o destino de notificación inválido.')
     cur.execute('SELECT usuario_id FROM cliente WHERE id=%s AND empresa_id=%s AND activo', (cliente_id,empresa_id))
     cliente=cur.fetchone()
     if not cliente:
         return None
-    uid=cliente['usuario_id']
+    return emitir_usuario(cur, empresa_id, cliente['usuario_id'], clave, titulo, mensaje,
+                          categoria, recurso_tipo, recurso_id, orden_id)
+
+
+def emitir_usuario(cur, empresa_id, uid, clave, titulo, mensaje, categoria, recurso_tipo=None, recurso_id=None, orden_id=None):
+    """La bandeja y su salida se insertan en la transacción del hecho comercial."""
+    if categoria not in CATEGORIAS or (
+        (recurso_tipo is not None or recurso_id is not None)
+        and (recurso_tipo not in DESTINOS or int(recurso_id or 0) <= 0)
+    ):
+        raise ValueError('Categoría o destino de notificación inválido.')
     cur.execute('''INSERT INTO notificacion_usuario(empresa_id,usuario_id,clave,titulo,mensaje,orden_id,
-        categoria,recurso_tipo,recurso_id,accion) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,'VER_DETALLE')
+        categoria,recurso_tipo,recurso_id,accion) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         ON CONFLICT(empresa_id,usuario_id,clave) DO NOTHING RETURNING id''',
-        (empresa_id,uid,clave,titulo,mensaje,orden_id,categoria,recurso_tipo,recurso_id))
+        (empresa_id,uid,clave,titulo,mensaje,orden_id,categoria,recurso_tipo,recurso_id,
+         'VER_DETALLE' if recurso_tipo else None))
     nueva=cur.fetchone()
     if nueva:
         cur.execute('''INSERT INTO salida_push(notificacion_id,dispositivo_id,expira_en)

@@ -45,12 +45,13 @@ def _enviar(
     archivo: bytes | None = None,
     nombre: str | None = None,
     emisor: str | None = None,
+    clave_idempotencia: str | None = None,
 ) -> None:
     if MAIL_PROVIDER not in {"smtp", "resend"}:
         raise ValueError("MAIL_PROVIDER debe ser smtp o resend.")
     destino = _destinatario(destinatario)
     if MAIL_PROVIDER == "resend":
-        _enviar_resend(destino, asunto, contenido, archivo, nombre, emisor)
+        _enviar_resend(destino, asunto, contenido, archivo, nombre, emisor, clave_idempotencia)
         return
 
     if not SMTP_HOST or not SMTP_USER or not SMTP_PASSWORD or not SMTP_FROM:
@@ -70,7 +71,7 @@ def _enviar(
         smtp.send_message(mensaje)
 
 
-def _enviar_resend(destino, asunto, contenido, archivo, nombre, emisor) -> None:
+def _enviar_resend(destino, asunto, contenido, archivo, nombre, emisor, clave_idempotencia=None) -> None:
     if not RESEND_API_KEY or not RESEND_FROM:
         raise ValueError("Configure RESEND_API_KEY y RESEND_FROM.")
     if "\r" in RESEND_FROM or "\n" in RESEND_FROM:
@@ -89,15 +90,15 @@ def _enviar_resend(destino, asunto, contenido, archivo, nombre, emisor) -> None:
             "content": base64.b64encode(archivo).decode("ascii"),
             "content_type": "application/pdf",
         }]
+    headers = {"Authorization": f"Bearer {RESEND_API_KEY}", "User-Agent": "StyleAR/1.0"}
+    if clave_idempotencia:
+        headers["Idempotency-Key"] = clave_idempotencia
     # Sin reintentos automáticos: un timeout podría ocurrir después del envío.
     # No propagar errores/cuerpos de requests, que pueden incluir datos privados.
     try:
         respuesta = requests.post(
             "https://api.resend.com/emails",
-            headers={
-                "Authorization": f"Bearer {RESEND_API_KEY}",
-                "User-Agent": "StyleAR/1.0",
-            },
+            headers=headers,
             json=payload,
             timeout=(5, 20),
             allow_redirects=False,
@@ -126,5 +127,7 @@ def enviar_correo_con_adjunto(
     archivo: bytes,
     nombre: str,
     emisor: str,
+    *,
+    clave_idempotencia: str | None = None,
 ) -> None:
-    _enviar(destinatario, asunto, contenido, archivo, nombre, emisor)
+    _enviar(destinatario, asunto, contenido, archivo, nombre, emisor, clave_idempotencia)

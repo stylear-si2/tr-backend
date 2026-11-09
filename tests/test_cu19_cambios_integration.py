@@ -118,6 +118,12 @@ def test_diferencia_mayor_pago_idempotente_antes_de_entregar(api,compra,medio):
  for _ in range(2):assert api.post(f'/api/v1/pagos/{ruta}/{oid}',headers=c['h'],json={'aprobar':True}).status_code==200
  x=api.get(BASE,headers=c['h']).json()[0];assert x['estado']=='LISTO'
  assert Decimal(x['pago']['monto_total'])==20
+ recibos=consulta('SELECT datos FROM comprobante_pago_envio WHERE empresa_id=%s AND clave=%s',(c['a']['id'],f'orden:{oid}'))
+ assert len(recibos)==1
+ recibo=recibos[0]['datos']
+ assert Decimal(recibo['total'])==20 and recibo['sucursal']=='Centro'
+ assert 'Prenda devuelta' in recibo['lineas'][0][0] and 'Reemplazo' in recibo['lineas'][1][0]
+ assert Decimal(dict(recibo['importes'])['Crédito aplicado'])==50
  assert stock(c,c['rv'])['stock_disponible']==5
  assert api.post(f'{BASE}/{x["id"]}/completar',headers=c['ha'],json={'version':x['version'],'entrega_confirmada':True}).status_code==200
  assert stock(c,c['rv'])['stock_disponible']==4

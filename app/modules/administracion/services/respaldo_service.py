@@ -33,6 +33,7 @@ from app.modules.administracion.repositories.empresa_saas_repository import audi
 STATIC = Path(__file__).resolve().parents[4] / "static"
 LOGGER = logging.getLogger(__name__)
 PLATAFORMA = {"empresa", "plan", "suscripcion", "suscripcion_stripe", "plan_historial", "evento_plataforma", "respaldo", "respaldo_programacion", "schema_migrations", "solicitud_registro_empresa"}
+SOLO_GLOBAL = PLATAFORMA | {'comprobante_pago_envio'}
 
 
 def configuracion():
@@ -121,12 +122,12 @@ def _esquema(cur):
             fks.append({'table_name':r['tabla'],'column_name':columna,'padre':padre,'columna_padre':'id'})
             existentes.add(clave)
     # Un alcance por tabla. Las relaciones restantes se validan también por FK/triggers.
-    alcances = {t: 't.empresa_id = %s' for t, cols in tablas.items() if 'empresa_id' in cols and t not in PLATAFORMA}
+    alcances = {t: 't.empresa_id = %s' for t, cols in tablas.items() if 'empresa_id' in cols and t not in SOLO_GLOBAL}
     while True:
         nuevos = {}
         for r in fks:
             t, padre = r['table_name'], r['padre']
-            if t not in alcances and t not in PLATAFORMA and padre in alcances:
+            if t not in alcances and t not in SOLO_GLOBAL and padre in alcances:
                 condicion = alcances[padre].replace('t.', 'p.')
                 # Los hijos sin empresa de este esquema dependen directamente de usuario.
                 if 'empresa_id' not in tablas[padre]:
@@ -548,6 +549,9 @@ def _restaurar_global(z, nuevos):
             c.execute('UPDATE password_reset_token SET usado=TRUE')
             c.execute('UPDATE dispositivo_push SET activo=FALSE')
             c.execute("UPDATE salida_push SET estado='OMITIDO' WHERE estado IN ('PENDIENTE','FALLIDO')")
+            c.execute("SELECT to_regclass('public.comprobante_pago_envio')")
+            if c.fetchone()[0] is not None:
+                c.execute("UPDATE comprobante_pago_envio SET estado='FALLIDO',pdf=NULL WHERE estado='PENDIENTE'")
         ensayo.commit()
     finally:
         ensayo.close()

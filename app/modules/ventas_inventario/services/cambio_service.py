@@ -423,6 +423,9 @@ def evento_pago(cur,o,evento):
     cur.execute("UPDATE orden_pago SET estado='PAGADO' WHERE id=%s",(o['id'],))
     cur.execute("UPDATE venta SET estado='COMPLETADA',metodo_pago=%s WHERE id=%s",(o['metodo'],o['venta_id']))
     _actualizar(cur,c['id'],'LISTO')
+    from .comprobante_pago_service import encolar_cambio
+    cur.execute('SELECT fecha_pago FROM orden_pago WHERE id=%s AND empresa_id=%s', (o['id'], o['empresa_id']))
+    encolar_cambio(cur, o['empresa_id'], {**o, **cur.fetchone()}, _detalle(cur, c['id'], o['empresa_id']))
     posventa.avisar(cur,c,'pago','El pago de la diferencia fue confirmado. El reemplazo está listo para entrega.')
 
 

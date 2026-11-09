@@ -1,5 +1,6 @@
 """CU16 bloque 1: únicamente PostgreSQL local desechable; ningún cobro real."""
 from concurrent.futures import ThreadPoolExecutor
+from decimal import Decimal
 from uuid import uuid4
 import hashlib,hmac,json,time
 from types import SimpleNamespace
@@ -87,6 +88,8 @@ def test_confirmacion_repetida_atomica_notificacion_y_ajustes_carrito(api,empres
     assert consulta('SELECT stock_disponible FROM inventario_sucursal WHERE producto_variante_id=%s',(vid,),True)['stock_disponible']==3
     assert consulta('SELECT cantidad FROM carrito_item WHERE producto_variante_id=%s AND activo',(vid,),True)['cantidad']==1
     notas=api.get('/api/v1/notificaciones',headers=h).json();assert len(notas)==1 and notas[0]['titulo']=='Compra confirmada'
+    comprobantes = consulta('SELECT datos FROM comprobante_pago_envio WHERE empresa_id=%s', (a['id'],))
+    assert len(comprobantes) == 1 and ['Orden de pago', o['orden_id']] in comprobantes[0]['datos']['referencias']
     assert api.patch(f'/api/v1/notificaciones/{notas[0]["id"]}/leer',headers=h).status_code==200
     assert api.get('/api/v1/notificaciones',headers=h).json()[0]['leida'] is True
 
@@ -331,7 +334,7 @@ def test_refund_stripe_referencia_moneda_importe_y_duplicados(api,empresas,monke
     assert api.get('/api/v1/pagos-empresa/reembolsos',headers=h).json()[0]['estado']=='CONFIRMADO'
 
 
-def test_reserva_anticipo_simulada_legada_se_conserva(api,empresas):
+def test_reserva_anticipo_simulada_legada_se_conserva(api,empresas,monkeypatch):
     from test_cu11_cu15_integration import reservar
     from app.modules.reservas.repositories.reserva_repository import crear_orden_anticipo_reserva
     a,_,_,_=empresas;_,h,sid,vid,uid=preparar(api,a)
@@ -344,4 +347,19 @@ def test_reserva_anticipo_simulada_legada_se_conserva(api,empresas):
         r=api.post(f'/api/v1/pagos/stripe/confirmar-prueba/{oid}',headers=h,json={})
         assert r.status_code==200 and r.json()['estado']=='PAGADO',r.text
     assert consulta('SELECT anticipo_pagado FROM reserva WHERE id=%s',(reserva['id'],),True)['anticipo_pagado'] is True
+    comprobantes = consulta('SELECT datos FROM comprobante_pago_envio WHERE empresa_id=%s', (a['id'],))
+    assert len(comprobantes) == 1 and comprobantes[0]['datos']['titulo'] == 'Anticipo de reserva'
+    assert Decimal(comprobantes[0]['datos']['total']) == 10
     assert consulta('SELECT stock_disponible FROM inventario_sucursal WHERE producto_variante_id=%s',(vid,),True)['stock_disponible']==4
+    monkeypatch.setenv('STRIPE_SECRET_KEY', 'MODO_PRUEBA')
+    saldo = api.post(f"/api/v1/reservas/{reserva['id']}/finalizar", headers=h, json={
+        'metodo_pago': 'STRIPE',
+        'items': [{'reserva_detalle_id': reserva['detalles'][0]['id'], 'cantidad': 1}],
+    })
+    assert saldo.status_code == 200 and saldo.json()['requiere_checkout'], saldo.text
+    for _ in range(2):
+        r = api.post(f"/api/v1/pagos/stripe/confirmar-prueba/{saldo.json()['orden_id']}", headers=h, json={})
+        assert r.status_code == 200 and r.json()['estado'] == 'PAGADO', r.text
+    comprobantes = consulta('SELECT datos FROM comprobante_pago_envio WHERE empresa_id=%s ORDER BY id', (a['id'],))
+    assert len(comprobantes) == 2 and comprobantes[-1]['datos']['titulo'] == 'Pago final de reserva'
+    assert Decimal(comprobantes[-1]['datos']['total']) == 40

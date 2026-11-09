@@ -13,6 +13,7 @@ def emitir_nota_cursor(cur, venta_id, empresa_id):
     if existente:
         return dict(existente)
     cur.execute('''SELECT v.codigo,v.subtotal,v.descuento,v.total,v.metodo_pago,v.fecha_venta,
+        v.tipo_entrega,v.costo_delivery,
         e.nombre AS empresa,e.codigo AS empresa_codigo,e.comprobante_config,
         s.nombre AS sucursal,s.direccion,s.telefono,
         concat_ws(' ',u.nombre,u.apellido) AS cliente,u.correo,
