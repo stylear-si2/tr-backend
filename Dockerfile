@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11-slim-trixie
 
 WORKDIR /app
 
@@ -6,9 +6,23 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8000
 
-# Install system dependencies required by OpenCV/MediaPipe on Linux
+# Install the PostgreSQL 18 client from PGDG and the vision system libraries.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    postgresql-client \
+    ca-certificates \
+    curl \
+    && install -d /usr/share/postgresql-common/pgdg \
+    && curl --fail --silent --show-error --location \
+        https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+        --output /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+    && printf '%s\n' \
+        'Types: deb' \
+        'URIs: https://apt.postgresql.org/pub/repos/apt' \
+        'Suites: trixie-pgdg' \
+        'Components: main' \
+        'Signed-By: /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc' \
+        > /etc/apt/sources.list.d/pgdg.sources \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    postgresql-client-18 \
     libxcb1 \
     libgl1 \
     libglib2.0-0 \

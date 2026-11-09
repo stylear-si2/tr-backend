@@ -206,7 +206,7 @@ def _calcular_ruta(origen_lat: Decimal, origen_lng: Decimal, destino_lat: Decima
     api_key=os.getenv('OPENROUTE_API_KEY','').strip()
     if not api_key:raise HTTPException(503,'El servicio de rutas no está configurado. No se puede cotizar el envío.')
     try:
-        response=requests.post('https://api.openrouteservice.org/v2/directions/driving-car/geojson',
+        response=requests.post('https://api.heigit.org/openrouteservice/v2/directions/driving-car/geojson',
             headers={'Authorization':api_key,'Content-Type':'application/json'},
             json={'coordinates':[[float(origen_lng),float(origen_lat)],[float(destino_lng),float(destino_lat)]]},timeout=10)
         if response.status_code==404:raise HTTPException(409,'No existe una ruta disponible para ese destino.')
