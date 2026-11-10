@@ -1,7 +1,7 @@
 from io import BytesIO
 
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Font, PatternFill, Alignment
 
 
 def _seguro(valor: object) -> object:
@@ -19,10 +19,20 @@ def crear_excel(reporte: dict[str, object]) -> bytes:
     if reporte.get("nota"):
         resumen.append(["Nota", reporte["nota"]])
     for key, value in reporte["filtros_efectivos"].items():
+        if key=='analisis_id': continue
         resumen.append([key.replace("_", " ").title(), str(value) if value is not None else "Todas"])
     resumen.append([])
     for indicador in reporte["indicadores"]:
         resumen.append([indicador["label"], indicador["valor"]])
+    if reporte.get('analisis_ia'):
+        analisis=reporte['analisis_ia']
+        resumen.append([])
+        resumen.append(['Análisis de resultados',analisis['motor']])
+        resumen.append(['Interpretación',_seguro(analisis['narrativa'])])
+        for conclusion in analisis['conclusiones']:
+            resumen.append(['Hallazgo',_seguro(conclusion)])
+        resumen.append(['Gráfico recomendado',analisis['grafico']])
+        resumen.append(['Motivo',_seguro(analisis['motivo_grafico'])])
     datos = wb.create_sheet("Datos")
     columnas = reporte["columnas"]
     if columnas:
@@ -40,6 +50,12 @@ def crear_excel(reporte: dict[str, object]) -> bytes:
         for column in sheet.columns:
             letter = column[0].column_letter
             sheet.column_dimensions[letter].width = min(42, max(14, max(len(str(c.value or "")) for c in column) + 2))
+    if reporte.get('analisis_ia'):
+        resumen.column_dimensions['B'].width=85
+        for fila in resumen.iter_rows():
+            if fila[0].value in {'Interpretación','Hallazgo','Motivo'}:
+                fila[1].alignment=Alignment(wrap_text=True,vertical='top')
+                resumen.row_dimensions[fila[0].row].height=max(30,15*((len(str(fila[1].value or ''))//80)+2))
     output = BytesIO()
     wb.save(output)
     return output.getvalue()

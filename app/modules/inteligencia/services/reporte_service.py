@@ -74,13 +74,18 @@ def generar_detalle(request,empresa_id):
     _validar_sucursal_reporte(request,empresa_id)
     datos=consultar_reporte(request,empresa_id,paginacion=(request.pagina,request.tamano))
     r=datos['resumen']
-    return {'tipo':request.tipo,'titulo':TITULOS[request.tipo],
+    respuesta = {'tipo':request.tipo,'titulo':TITULOS[request.tipo],
         'filtros_efectivos':request.model_dump(mode='json'),'generado_en':datetime.now(ZoneInfo('America/La_Paz')).isoformat(),
         'pagina':request.pagina,'tamano':request.tamano,'filas':datos['filas'],
         'total_filas':r['total_filas'],'resumen':r,'serie_grafico':datos['serie_grafico'],
         'sin_datos':r['total_filas']==0,
         'columnas':[{'key':k,'label':k.replace('_',' ').title()} for k in datos['filas'][0]] if datos['filas'] else [],
         'nota': ('Los importes corresponden a prendas vendidas, con descuentos proporcionales y sin delivery. Son ventas registradas, no utilidad ni saldo neto de devoluciones.' if request.tipo in {'PRODUCTOS_MAS_VENDIDOS','VENTAS_POR_SUCURSAL','INGRESOS_POR_CATEGORIA'} else 'El filtro de producto o categoría selecciona ventas que contienen esas prendas; los importes incluyen toda la venta.' if request.tipo=='VENTAS' and (request.categoria_id or request.producto_id) else 'Los totales corresponden al resultado completo; el inventario es actual y los importes de órdenes son nominales.')}
+
+    from .reporte_analisis import firma_resultado
+    respuesta['firma_resultado']=firma_resultado(respuesta)
+    return respuesta
+
 
 
 def generar_dashboard(request,empresa_id):
@@ -374,7 +379,7 @@ def generar_reporte(request: ReporteRequest, empresa_id: int) -> dict[str, objec
             key = fecha.strftime({'MES':'%Y-%m','SEMANA':'%G-W%V','DIA':'%Y-%m-%d'}[request.agrupacion])
             if request.tipo=='PAGOS':
                 key+=' · '+str(row.get('moneda') or 'BOB')
-            serie[key] += float(row.get("total", row.get("monto_total", 1)) or (0 if request.tipo in {"VENTAS", "RESERVAS", "PAGOS"} else 1))
+            serie[key] += float(row.get("costo_delivery") or 0) if request.tipo=="DELIVERIES" else float(row.get("total", row.get("monto_total", 1)) or (0 if request.tipo in {"VENTAS", "RESERVAS", "PAGOS"} else 1))
     elif request.tipo == "PRODUCTOS_MAS_VENDIDOS":
         serie = {row['producto']: int(row['unidades']) for row in rows}
     elif request.tipo in {'VENTAS_POR_SUCURSAL','INGRESOS_POR_CATEGORIA'}:

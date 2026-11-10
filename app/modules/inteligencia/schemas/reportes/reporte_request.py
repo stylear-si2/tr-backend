@@ -1,4 +1,5 @@
 from datetime import date
+from uuid import UUID
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -22,6 +23,7 @@ TipoReporte = Literal[
 
 
 class ReporteRequest(BaseModel):
+    analisis_id: UUID | None = None
     tipo: TipoReporte
     fecha_desde: date
     fecha_hasta: date
@@ -57,6 +59,15 @@ class ReporteRequest(BaseModel):
 class InterpretarRequest(BaseModel):
     texto: str = Field(min_length=3, max_length=500)
     origen: Literal['TEXTO','VOZ'] = 'TEXTO'
+
+
+class AudioReporteRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    analisis_id: UUID
+
+
+class AnalizarReporteRequest(ReporteRequest):
+    firma_resultado: str | None = Field(default=None,pattern=r'^[a-f0-9]{64}$')
 
 
 class DetalleReporteRequest(ReporteRequest):

@@ -1,7 +1,7 @@
 from io import BytesIO
 
 from fastapi import APIRouter, Depends
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 
 from app.core.contexto_empresa import exigir_empresa_id
 from app.core.plan_empresa import exigir_funcion_empresa
@@ -15,6 +15,8 @@ from app.modules.inteligencia.schemas.reportes.reporte_request import (
     InterpretarRequest,
     DetalleReporteRequest, DashboardRequest, EditarReporteProgramadoRequest,
     ReporteRequest,
+    AudioReporteRequest,
+    AnalizarReporteRequest,
 )
 from app.modules.inteligencia.services.reporte_service import (
     actualizar_estado_programado_service,
@@ -59,8 +61,17 @@ def generar_endpoint(request: ReporteRequest, usuario_actual: dict[str, object] 
     return generar_reporte(limitar_reporte(usuario_actual,request), exigir_empresa_id(usuario_actual))
 
 
-def _archivo(request: ReporteRequest, extension: str, empresa_id: int):
+def _archivo(request: ReporteRequest, extension: str, empresa_id: int, usuario=None):
     reporte = generar_reporte(request, empresa_id)
+    if request.analisis_id and usuario:
+        from app.modules.inteligencia.services.reporte_analisis import recuperar
+        entrada=recuperar(usuario,request.analisis_id,request)
+        # Comparar con los datos actuales antes de adjuntar una interpretación anterior.
+        from app.modules.inteligencia.services.reporte_analisis import firma_resultado
+        if entrada['firma'] == firma_resultado(reporte):
+            reporte['analisis_ia']=entrada['respuesta']
+        else:
+            reporte['nota']=(reporte.get('nota') or '')+' El análisis anterior no se adjuntó porque cambió el resultado. Genera uno nuevo para incluirlo.'
     data = crear_pdf(reporte) if extension == "pdf" else crear_excel(reporte)
     mime = "application/pdf" if extension == "pdf" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     filename = f"{request.tipo.lower()}_{request.fecha_desde}_{request.fecha_hasta}.{extension}"
@@ -70,13 +81,29 @@ def _archivo(request: ReporteRequest, extension: str, empresa_id: int):
 @router.post("/exportar/pdf")
 def pdf_endpoint(request: ReporteRequest, usuario_actual: dict[str, object] = Depends(requerir_reportes)):
     exigir_funcion_empresa(exigir_empresa_id(usuario_actual),'reportes_pdf')
-    return _archivo(limitar_reporte(usuario_actual,request), "pdf", exigir_empresa_id(usuario_actual))
+    return _archivo(limitar_reporte(usuario_actual,request), "pdf", exigir_empresa_id(usuario_actual),usuario_actual)
 
 
 @router.post("/exportar/excel")
 def excel_endpoint(request: ReporteRequest, usuario_actual: dict[str, object] = Depends(requerir_reportes)):
     exigir_funcion_empresa(exigir_empresa_id(usuario_actual),'reportes_excel')
-    return _archivo(limitar_reporte(usuario_actual,request), "xlsx", exigir_empresa_id(usuario_actual))
+    return _archivo(limitar_reporte(usuario_actual,request), "xlsx", exigir_empresa_id(usuario_actual),usuario_actual)
+
+
+@router.post('/analizar')
+def analizar_endpoint(request:AnalizarReporteRequest,usuario=Depends(requerir_reportes)):
+    from app.modules.inteligencia.services.reporte_analisis import analizar
+    exigir_funcion_empresa(exigir_empresa_id(usuario),'reportes_interpretacion')
+    return analizar(usuario,limitar_reporte(usuario,request))
+
+
+@router.post('/audio')
+def audio_endpoint(request:AudioReporteRequest,usuario=Depends(requerir_reportes)):
+    from app.modules.inteligencia.services.reporte_analisis import audio
+    exigir_funcion_empresa(exigir_empresa_id(usuario),'reportes_interpretacion')
+    exigir_funcion_empresa(exigir_empresa_id(usuario),'reportes_voz')
+    return Response(audio(usuario,request.analisis_id),media_type='audio/wav',
+                    headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'})
 
 
 # ── Reportes Programados / Automáticos ─────────────────────────────
