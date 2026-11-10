@@ -2010,3 +2010,7 @@ Empleados abre tarjetas por tipo laboral (encargados, caja, ventas), equipo comp
 Notificaciones incorpora cabecera, filtros en tarjeta, botones con iconos, indicadores de lectura, colores por categoria y preferencias organizadas. Se mantienen los endpoints y acciones existentes. Diseno adaptable a ventanas estrechas.
 
 Validacion: compilacion web aprobada; cuatro pruebas existentes de notificaciones aprobadas; filtro CLIENTE comprobado contra la copia local (cinco cuentas, incluidos usuarios con varios roles). AXE sin infracciones WCAG A/AA en usuarios, empleados y notificaciones, y con avisos y preferencias a 1280 y 390 px; sin desbordamiento horizontal en esas vistas de notificaciones. Sin despliegue ni cambios en Presentacion.
+
+## Integracion con main (09/11/2026)
+Integradas las actualizaciones remotas de reservas, carrito y configuracion de pagos. Unicos conflictos: notificaciones web, resueltos conservando la ultima interfaz local de Anghy. Verificacion: 47 pruebas backend, cinco pruebas web y compilacion de produccion aprobadas. Las credenciales y la base local no forman parte de los commits.
+
