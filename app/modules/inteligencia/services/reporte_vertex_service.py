@@ -16,6 +16,8 @@ from app.modules.inteligencia.services.reporte_periodo import rango_mes_explicit
 
 TIPOS_DISPONIBLES = [
     "VENTAS",
+    "VENTAS_POR_SUCURSAL",
+    "INGRESOS_POR_CATEGORIA",
     "PRODUCTOS_MAS_VENDIDOS",
     "INVENTARIO",
     "RESERVAS",
@@ -114,7 +116,7 @@ def _normalizar_filtros_vertex(filtros: dict[str, object], texto: str, hoy: date
     return resultado
 
 
-def interpretar_con_vertex(texto: str, hoy: date, sucursales: list[dict[str, object]]) -> dict[str, object]:
+def interpretar_con_vertex(texto: str, hoy: date, sucursales: list[dict[str, object]], catalogo=None) -> dict[str, object]:
     proveedor = AI_REPORTS_PROVIDER
     if proveedor == "GEMINI" and not GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY no está configurada.")
@@ -138,6 +140,7 @@ Convierte el texto del usuario a filtros JSON para el endpoint de reportes.
 Fecha actual en Bolivia: {hoy.isoformat()}.
 Tipos válidos: {", ".join(TIPOS_DISPONIBLES)}.
 Sucursales disponibles: {json.dumps(sucursales_prompt, ensure_ascii=False)}.
+Categorías y productos autorizados: {json.dumps(catalogo or {}, ensure_ascii=False)}.
 
 Reglas obligatorias:
 - Responde SOLO un JSON, sin markdown, sin explicación.
@@ -148,9 +151,15 @@ Reglas obligatorias:
 - Si el usuario dice "todas las sucursales", sucursal_id debe ser null.
 - Si menciona una sucursal existente, usa su id exacto.
 - Si menciona una sucursal que no existe, interpretado=false y agrega advertencia.
-- agrupacion solo puede ser DIA o MES.
+- agrupacion solo puede ser DIA, SEMANA o MES.
+- Ventas agrupadas o comparadas por sucursal: tipo VENTAS_POR_SUCURSAL.
+- Ingresos agrupados por categoría: tipo INGRESOS_POR_CATEGORIA.
+- PRODUCTOS_MAS_VENDIDOS suma todas las variantes del producto; limite indica cuántos productos (1 a 100).
+- Si falta un criterio indispensable, hay ambigüedad o piden un tipo no soportado, interpretado=false con advertencias. Nunca ignores criterios que no puedes representar.
+- No generes SQL ni consultas libres. No inventes IDs de categorías o productos.
 - tipo_entrega solo puede ser RECOJO_SUCURSAL, DELIVERY o null.
 - activo solo puede ser true, false o null.
+- Usa categoria_id y producto_id solo si el usuario los solicita y figuran en el catálogo autorizado. Si el nombre es ambiguo, pide aclaración.
 - No inventes filtros.
 
 Estados orientativos:
@@ -169,6 +178,9 @@ Formato exacto:
     "sucursal_id": null,
     "agrupacion": "DIA",
     "solo_bajo_stock": false,
+    "limite": 10,
+    "categoria_id": null,
+    "producto_id": null,
     "estado": null,
     "metodo_pago": null,
     "proveedor_pago": null,

@@ -19,6 +19,11 @@ def listar_sucursales(empresa_id: int) -> list[dict[str, object]]:
     return _rows("SELECT s.id, s.nombre, c.nombre AS ciudad FROM sucursal s JOIN ciudad c ON c.id = s.ciudad_id WHERE s.activo = TRUE AND s.empresa_id = %s ORDER BY c.nombre, s.nombre", (empresa_id,))
 
 
+def catalogo_comercial(empresa_id):
+    return {'categorias': _rows('SELECT id,nombre FROM categoria WHERE empresa_id=%s AND activo ORDER BY nombre,id', (empresa_id,)),
+            'productos': _rows('SELECT id,nombre,categoria_id FROM producto WHERE empresa_id=%s AND activo ORDER BY nombre,id', (empresa_id,))}
+
+
 def sucursal_encargado(empresa_id,usuario_id):
     filas=_rows('''SELECT em.sucursal_id FROM empleado em JOIN sucursal s ON s.id=em.sucursal_id AND s.empresa_id=em.empresa_id
         WHERE em.usuario_id=%s AND em.empresa_id=%s AND em.activo AND s.activo ORDER BY em.id LIMIT 1''',(usuario_id,empresa_id))
@@ -27,7 +32,7 @@ def sucursal_encargado(empresa_id,usuario_id):
 
 def _paginar_sql(query,params,request,paginacion):
     orden={'VENTAS':'fecha DESC,id DESC','PRODUCTOS_MAS_VENDIDOS':'unidades DESC,producto,sku,tipo_entrega',
-           'INVENTARIO':'sucursal,producto,sku,id','RESERVAS':'fecha DESC,id DESC',
+           'INVENTARIO':'real,sucursal,producto,sku,id','RESERVAS':'fecha DESC,id DESC',
            'MOVIMIENTOS':'fecha DESC,id DESC','TRANSFERENCIAS':'fecha DESC,id DESC',
            'PAGOS':'fecha DESC,orden_id DESC','DELIVERIES':'fecha DESC,id DESC','USUARIOS':'fecha DESC,id DESC'}[request.tipo]
     if request.tipo=='INVENTARIO':
@@ -37,7 +42,7 @@ def _paginar_sql(query,params,request,paginacion):
     else:
         campo='monto_total' if request.tipo=='PAGOS' else 'costo_delivery' if request.tipo=='DELIVERIES' else 'total' if request.tipo in {'VENTAS','RESERVAS'} else None
         valor=f'sum({campo})' if campo else 'count(*)'
-        formato='YYYY-MM' if request.agrupacion=='MES' else 'YYYY-MM-DD'
+        formato={'MES':'YYYY-MM','SEMANA':'IYYY-"W"IW','DIA':'YYYY-MM-DD'}[request.agrupacion]
         condicion=" WHERE estado='COMPLETADA'" if request.tipo=='VENTAS' else ''
         if request.tipo=='PAGOS':
             serie=f"SELECT to_char(fecha AT TIME ZONE 'America/La_Paz','{formato}') || ' · ' || moneda AS label,sum(monto_total)::numeric AS valor FROM datos GROUP BY label"
@@ -71,7 +76,25 @@ def _paginar_sql(query,params,request,paginacion):
 
 
 def consultar_reporte(request: ReporteRequest, empresa_id: int, *, paginacion=None) -> list[dict[str, object]]:
+    if request.tipo in {'PRODUCTOS_MAS_VENDIDOS','VENTAS_POR_SUCURSAL','INGRESOS_POR_CATEGORIA'}:
+        from .reporte_comercial import consulta, paginar
+        query, params = consulta(request, empresa_id)
+        filas = _rows(query, params)
+        return paginar(filas, request, paginacion) if paginacion else filas
     def ejecutar(query,params):
+        if request.tipo in {'VENTAS','INVENTARIO'} and (request.categoria_id or request.producto_id):
+            if request.tipo == 'VENTAS':
+                condicion = """ AND EXISTS (SELECT 1 FROM venta_detalle fd
+                    JOIN producto_variante fv ON fv.id=fd.producto_variante_id AND fv.empresa_id=v.empresa_id
+                    JOIN producto fp ON fp.id=fv.producto_id AND fp.empresa_id=v.empresa_id
+                    WHERE fd.venta_id=v.id AND fd.empresa_id=v.empresa_id
+                    AND (%s::bigint IS NULL OR fp.categoria_id=%s)
+                    AND (%s::bigint IS NULL OR fp.id=%s)) """
+            else:
+                condicion = ' AND (%s::bigint IS NULL OR p.categoria_id=%s) AND (%s::bigint IS NULL OR p.id=%s) '
+            inicio = query.rfind('ORDER BY')
+            query = query[:inicio] + condicion + query[inicio:]
+            params = tuple(params) + (request.categoria_id,request.categoria_id,request.producto_id,request.producto_id)
         if paginacion is not None:
             return _paginar_sql(query,params,request,paginacion)
         return _rows(query.replace('LIMIT 5000','LIMIT 5001'),params)
@@ -97,20 +120,6 @@ def consultar_reporte(request: ReporteRequest, empresa_id: int, *, paginacion=No
               AND (%s::text IS NULL OR v.tipo_entrega = %s) AND (%s::text IS NULL OR v.tipo = %s)
             ORDER BY v.fecha_venta DESC,v.id DESC LIMIT 5000
         """, (empresa_id, desde, hasta, sucursal, sucursal, estado, estado, metodo_pago, metodo_pago, tipo_entrega, tipo_entrega, tipo_venta, tipo_venta))
-    if request.tipo == "PRODUCTOS_MAS_VENDIDOS":
-        tipo_entrega = request.tipo_entrega
-        return ejecutar("""
-            SELECT p.nombre AS producto, pv.sku, v.tipo_entrega, SUM(d.cantidad) AS unidades,
-                   SUM(d.subtotal) AS importe
-            FROM venta v JOIN venta_detalle d ON d.venta_id = v.id
-            JOIN producto_variante pv ON pv.id = d.producto_variante_id
-            JOIN producto p ON p.id = pv.producto_id
-            WHERE v.estado = 'COMPLETADA' AND v.activo = TRUE AND v.empresa_id = %s AND p.empresa_id = v.empresa_id
-              AND (v.fecha_venta AT TIME ZONE 'America/La_Paz')::date BETWEEN %s AND %s
-              AND (%s::bigint IS NULL OR v.sucursal_id = %s)
-              AND (%s::text IS NULL OR v.tipo_entrega = %s) AND (%s::text IS NULL OR v.tipo = %s)
-            GROUP BY p.nombre, pv.sku, v.tipo_entrega ORDER BY unidades DESC, producto,pv.sku,v.tipo_entrega LIMIT 5000
-        """, (empresa_id, desde, hasta, sucursal, sucursal, tipo_entrega, tipo_entrega, tipo_venta, tipo_venta))
     if request.tipo == "INVENTARIO":
         return ejecutar("""
             SELECT i.id, s.nombre AS sucursal, p.nombre AS producto, pv.sku,
@@ -123,7 +132,7 @@ def consultar_reporte(request: ReporteRequest, empresa_id: int, *, paginacion=No
             WHERE i.activo = TRUE AND s.empresa_id = %s AND p.empresa_id = s.empresa_id
               AND (%s::bigint IS NULL OR i.sucursal_id = %s)
               AND (%s::boolean = FALSE OR i.stock_disponible - i.stock_reservado <= i.stock_minimo)
-            ORDER BY s.nombre, p.nombre, pv.sku,i.id LIMIT 5000
+            ORDER BY real,s.nombre,p.nombre,pv.sku,i.id LIMIT 5000
         """, (empresa_id, sucursal, sucursal, request.solo_bajo_stock))
     if request.tipo == "RESERVAS":
         estado = request.estado.strip().upper() if request.estado else None

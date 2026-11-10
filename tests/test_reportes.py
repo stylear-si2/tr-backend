@@ -15,6 +15,12 @@ from app.modules.inteligencia.schemas.reportes.reporte_request import ReporteReq
 from app.modules.inteligencia.services import reporte_service, reporte_vertex_service
 
 
+@pytest.fixture(autouse=True)
+def catalogo_local_de_prueba(monkeypatch):
+    from app.modules.inteligencia.repositories import reporte_repository
+    monkeypatch.setattr(reporte_repository, 'catalogo_comercial', lambda _: {'categorias': [], 'productos': []})
+
+
 def test_rango_invertido_no_se_acepta():
     try:
         ReporteRequest(tipo="VENTAS", fecha_desde=date(2026, 9, 15), fecha_hasta=date(2026, 9, 1))

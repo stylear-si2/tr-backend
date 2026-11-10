@@ -8,6 +8,8 @@ from app.modules.inteligencia.services.programacion_reporte import validar_calen
 
 TipoReporte = Literal[
     "VENTAS",
+    "VENTAS_POR_SUCURSAL",
+    "INGRESOS_POR_CATEGORIA",
     "PRODUCTOS_MAS_VENDIDOS",
     "INVENTARIO",
     "RESERVAS",
@@ -24,7 +26,10 @@ class ReporteRequest(BaseModel):
     fecha_desde: date
     fecha_hasta: date
     sucursal_id: int | None = Field(default=None, gt=0)
-    agrupacion: Literal["DIA", "MES"] = "DIA"
+    agrupacion: Literal["DIA", "SEMANA", "MES"] = "DIA"
+    categoria_id: int | None = Field(default=None, gt=0)
+    producto_id: int | None = Field(default=None, gt=0)
+    limite: int = Field(default=10, ge=1, le=100)
     solo_bajo_stock: bool = False
     estado: str | None = Field(default=None, max_length=40)
     metodo_pago: str | None = Field(default=None, max_length=40)
@@ -36,6 +41,12 @@ class ReporteRequest(BaseModel):
 
     @model_validator(mode="after")
     def validar_rango(self):
+        if self.tipo in {'VENTAS_POR_SUCURSAL','INGRESOS_POR_CATEGORIA','PRODUCTOS_MAS_VENDIDOS'} and self.estado not in (None,'COMPLETADA'):
+            raise ValueError('Este reporte agrupa únicamente ventas completadas.')
+        if self.solo_bajo_stock and self.tipo != 'INVENTARIO':
+            raise ValueError('El filtro de bajo stock corresponde al reporte de inventario.')
+        if (self.categoria_id or self.producto_id) and self.tipo not in {'VENTAS', 'VENTAS_POR_SUCURSAL', 'INGRESOS_POR_CATEGORIA', 'PRODUCTOS_MAS_VENDIDOS', 'INVENTARIO'}:
+            raise ValueError('Los filtros de producto y categoría no están disponibles para este tipo de reporte.')
         if self.fecha_desde > self.fecha_hasta:
             raise ValueError("La fecha inicial no puede ser posterior a la final.")
         if (self.fecha_hasta - self.fecha_desde).days > 366:
@@ -92,7 +103,7 @@ class CrearReporteProgramadoRequest(BaseModel):
                 raise ValueError('Correo destinatario inválido.')
         except (ZoneInfoNotFoundError,IndexError) as error:
             raise ValueError('Zona horaria o correo inválido.') from error
-        if set(self.filtros)-{'agrupacion','estado','metodo_pago','proveedor_pago','tipo_entrega','rol','activo','tipo_venta'}:
+        if set(self.filtros)-{'agrupacion','estado','metodo_pago','proveedor_pago','tipo_entrega','rol','activo','tipo_venta','categoria_id','producto_id','limite'}:
             raise ValueError('Filtros de programación desconocidos.')
         ReporteRequest(tipo=self.tipo,fecha_desde=date(2026,1,1),fecha_hasta=date(2026,1,1),**self.filtros)
         return self

@@ -27,6 +27,8 @@ from app.modules.inteligencia.schemas.reportes.reporte_request import (
 
 TITULOS = {
     "VENTAS": "Ventas registradas",
+    "VENTAS_POR_SUCURSAL": "Ventas por sucursal y período",
+    "INGRESOS_POR_CATEGORIA": "Ingresos por categoría",
     "PRODUCTOS_MAS_VENDIDOS": "Productos más vendidos",
     "INVENTARIO": "Inventario por sucursal",
     "RESERVAS": "Reservas",
@@ -40,9 +42,10 @@ MONETARIOS = {"subtotal", "descuento", "total", "importe"}
 
 
 def catalogo_reportes(empresa_id: int,usuario=None) -> dict[str, object]:
+    from app.modules.inteligencia.repositories.reporte_repository import catalogo_comercial
     sucursal=limitar_reporte(usuario) if usuario is not None else None
     return {"tipos": [{"id": key, "nombre": title} for key, title in TITULOS.items() if not (sucursal and key=='USUARIOS')],
-            "sucursales": [s for s in listar_sucursales(empresa_id) if sucursal is None or s['id']==sucursal]}
+            "sucursales": [s for s in listar_sucursales(empresa_id) if sucursal is None or s['id']==sucursal], **catalogo_comercial(empresa_id)}
 
 
 def limitar_reporte(usuario,request=None):
@@ -77,7 +80,7 @@ def generar_detalle(request,empresa_id):
         'total_filas':r['total_filas'],'resumen':r,'serie_grafico':datos['serie_grafico'],
         'sin_datos':r['total_filas']==0,
         'columnas':[{'key':k,'label':k.replace('_',' ').title()} for k in datos['filas'][0]] if datos['filas'] else [],
-        'nota':'Los totales corresponden al resultado completo; el inventario es actual y los importes de órdenes son nominales.'}
+        'nota': ('Los importes corresponden a prendas vendidas, con descuentos proporcionales y sin delivery. Son ventas registradas, no utilidad ni saldo neto de devoluciones.' if request.tipo in {'PRODUCTOS_MAS_VENDIDOS','VENTAS_POR_SUCURSAL','INGRESOS_POR_CATEGORIA'} else 'El filtro de producto o categoría selecciona ventas que contienen esas prendas; los importes incluyen toda la venta.' if request.tipo=='VENTAS' and (request.categoria_id or request.producto_id) else 'Los totales corresponden al resultado completo; el inventario es actual y los importes de órdenes son nominales.')}
 
 
 def generar_dashboard(request,empresa_id):
@@ -119,6 +122,13 @@ def comparar_valores(actual,anterior):
 
 
 def _validar_sucursal_reporte(request,empresa_id):
+    from app.modules.inteligencia.repositories.reporte_repository import catalogo_comercial
+    if getattr(request,'categoria_id',None) or getattr(request,'producto_id',None):
+        catalogo = catalogo_comercial(empresa_id)
+        if request.categoria_id and not any(c['id']==request.categoria_id for c in catalogo['categorias']):
+            raise HTTPException(422,'La categoría no pertenece a esta empresa o está inactiva.')
+        if request.producto_id and not any(p['id']==request.producto_id and (not request.categoria_id or p['categoria_id']==request.categoria_id) for p in catalogo['productos']):
+            raise HTTPException(422,'El producto no corresponde a esta empresa y categoría.')
     if request.sucursal_id is not None and not any(s['id']==request.sucursal_id for s in listar_sucursales(empresa_id)):
         raise HTTPException(422,'La sucursal seleccionada no existe o está inactiva.')
 
@@ -169,7 +179,7 @@ def _interpretar_por_reglas(texto: str, empresa_id: int, sucursal_permitida=None
         if mes_completo:
             inicio, fin = mes_completo
     palabras = [
-        ("PRODUCTOS_MAS_VENDIDOS", ("mas vendido", "mejor vendido", "top producto")),
+        ("PRODUCTOS_MAS_VENDIDOS", ("mas vendido", "mas vendidos", "mejor vendido", "mejor vendidos", "top producto", "top productos")),
         ("VENTAS", ("venta", "ventas", "ingreso", "ingresos")),
         ("INVENTARIO", ("inventario", "inventarios", "bajo stock", "existencia", "existencias")),
         ("RESERVAS", ("reserva", "reservas")),
@@ -198,7 +208,7 @@ def _interpretar_por_reglas(texto: str, empresa_id: int, sucursal_permitida=None
         if nombre in normal:
             sucursal_id = sucursal["id"]
             break
-    if "sucursal" in normal and sucursal_id is None and "todas" not in normal:
+    if "sucursal" in normal and sucursal_id is None and not any(p in normal for p in ("todas", "por sucursal", "las sucursales", "entre sucursales")):
         return {"interpretado": False, "advertencias": ["No se reconoció la sucursal. Selecciónala en los filtros."], "filtros": None}
     estado = None
     if "pendiente" in normal:
@@ -245,11 +255,12 @@ def _interpretar_por_reglas(texto: str, empresa_id: int, sucursal_permitida=None
     return {"interpretado": True, "advertencias": [], "texto_normalizado": normal, "filtros": filtros.model_dump(mode="json"), "motor": "reglas"}
 
 
-def interpretar(texto: str, empresa_id: int, sucursal_permitida=None) -> dict[str, object]:
+def _interpretar_base(texto: str, empresa_id: int, sucursal_permitida=None) -> dict[str, object]:
     hoy = datetime.now(ZoneInfo("America/La_Paz")).date()
     if AI_REPORTS_PROVIDER in {"VERTEX", "GEMINI"}:
         try:
-            return interpretar_con_vertex(texto, hoy, [s for s in listar_sucursales(empresa_id) if sucursal_permitida is None or s['id']==sucursal_permitida])
+            from app.modules.inteligencia.repositories.reporte_repository import catalogo_comercial
+            return interpretar_con_vertex(texto, hoy, [s for s in listar_sucursales(empresa_id) if sucursal_permitida is None or s['id']==sucursal_permitida], catalogo_comercial(empresa_id))
         except Exception as exc:
             resultado = _interpretar_por_reglas(texto, empresa_id, sucursal_permitida)
             advertencias = list(resultado.get("advertencias") or [])
@@ -260,15 +271,84 @@ def interpretar(texto: str, empresa_id: int, sucursal_permitida=None) -> dict[st
     return _interpretar_por_reglas(texto, empresa_id, sucursal_permitida)
 
 
+def interpretar(texto: str, empresa_id: int, sucursal_permitida=None) -> dict[str, object]:
+    if any(x in _normalizar(texto) for x in ('ganancia','utilidad','rentabilidad','salario','impuesto')):
+        return dict(interpretado=False,filtros=None,advertencias=['Ese cálculo no está disponible. Puedes consultar ventas, ingresos, inventario, reservas o pagos.'])
+    resultado = _interpretar_base(texto, empresa_id, sucursal_permitida)
+    normal = _normalizar(texto)
+    # Intenciones que el contrato representa de forma explícita, incluso en el respaldo local.
+    tipo = ('INGRESOS_POR_CATEGORIA' if 'categoria' in normal and any(x in normal for x in ('ingreso','generaron','recaud','por categoria'))
+            else 'VENTAS_POR_SUCURSAL' if 'sucursal' in normal and any(x in normal for x in ('agrupad','compar','por sucursal')) else None)
+    if tipo and not resultado.get('interpretado'):
+        resultado = _interpretar_por_reglas('ventas ' + texto, empresa_id, sucursal_permitida)
+    if not resultado.get('interpretado') or not resultado.get('filtros'):
+        return resultado
+    f = dict(resultado['filtros'])
+    if tipo:
+        if f.get('estado') not in (None,'COMPLETADA','PAGADO'):
+            return dict(interpretado=False,filtros=None,advertencias=['Los reportes agrupados de ingresos y ventas por sucursal incluyen ventas completadas. Para otros estados usa el detalle de ventas.'])
+        f['tipo'] = tipo
+        f['estado'] = None
+        if tipo=='VENTAS_POR_SUCURSAL': f['agrupacion']='MES'
+    if any(x in normal for x in ('por dia','diario','cada dia')):
+        f['agrupacion'] = 'DIA'
+    elif 'seman' in normal and any(x in normal for x in ('por semana','semanal','cada semana')):
+        f['agrupacion'] = 'SEMANA'
+    elif any(x in normal for x in ('por mes','mensual','cada mes','ultimos tres meses','ultimos 3 meses')):
+        f['agrupacion'] = 'MES'
+    if any(x in normal for x in ('ultimos tres meses','ultimos 3 meses')):
+        hoy = datetime.now(ZoneInfo('America/La_Paz')).date()
+        mes = hoy.year*12+hoy.month-1-2
+        f['fecha_desde'] = date(mes//12,mes%12+1,1).isoformat()
+        f['fecha_hasta'] = hoy.isoformat()
+    top = re.search(r'\b(?:top|primeros|los)\s+(\d+|diez|cinco|veinte)\s*(?:productos)?',normal)
+    if f['tipo']=='PRODUCTOS_MAS_VENDIDOS' and top:
+        n = top.group(1)
+        f['limite'] = int(n) if n.isdigit() else {'diez':10,'cinco':5,'veinte':20}[n]
+    if any(x in normal for x in ('digital','web')): f['tipo_venta']='DIGITAL'
+    elif 'presencial' in normal: f['tipo_venta']='PRESENCIAL'
+    if re.search(r'\bqr\b',normal): f['metodo_pago']='QR'
+    elif 'efectivo' in normal: f['metodo_pago']='EFECTIVO'
+    if f['tipo']=='INVENTARIO' and any(x in normal for x in ('menor existencia','menores existencias','poco stock','stock bajo')):
+        f['solo_bajo_stock'] = any(x in normal for x in ('poco stock','stock bajo'))
+    # Resolver únicamente nombres de entidades de la empresa, nunca IDs inventados por el modelo.
+    entidades = [('categoria_id','categoria'),('producto_id','producto')]
+    for campo, palabra in entidades:
+        nombre = re.search(r'\b(?:de la |de |del |en la |en el )?'+palabra+r'\s+["\']?(.+?)(?:["\']|\s+(?:entre|desde|durante|este|en septiembre|en octubre|en noviembre|del mes|de este mes)|$)', normal)
+        if nombre or f.get(campo):
+            from app.modules.inteligencia.repositories.reporte_repository import catalogo_comercial
+            catalogo = catalogo_comercial(empresa_id)
+            opciones = catalogo['categorias' if palabra=='categoria' else 'productos']
+            if nombre:
+                buscado = nombre.group(1).strip(' .')
+                coincidencias = [v for v in opciones if _normalizar(v['nombre'])==buscado]
+                if len(coincidencias)!=1:
+                    return dict(interpretado=False,filtros=None,advertencias=[f'No se pudo identificar una única {palabra}: {buscado}. Selecciónala en los filtros.'])
+                f[campo] = coincidencias[0]['id']
+    try:
+        validado = ReporteRequest(**f)
+        if validado.categoria_id or validado.producto_id:
+            _validar_sucursal_reporte(validado,empresa_id)
+    except (ValueError,HTTPException):
+        return dict(interpretado=False,filtros=None,advertencias=['Los criterios solicitados no son compatibles o no pertenecen a tu empresa. Revisa los filtros.'])
+    if not re.search(r'\d{1,2}[/-]\d{1,2}[/-]\d{4}', normal) and not any(x in normal for x in (*MESES, 'hoy','semana','mes','ano')):
+        resultado['advertencias'] = [*resultado.get('advertencias', []), 'No se indicó un período: se usa el mes actual hasta hoy. Puedes cambiar las fechas antes de generar.']
+    resultado['filtros'] = validado.model_dump(mode='json')
+    return resultado
+
+
 def _presentar(valor: object) -> object:
     if isinstance(valor, Decimal):
         return float(valor)
+    if isinstance(valor, date) and not isinstance(valor, datetime):
+        return valor.isoformat()
     if isinstance(valor, datetime):
         return valor.astimezone(ZoneInfo("America/La_Paz")).isoformat()
     return valor
 
 
 def generar_reporte(request: ReporteRequest, empresa_id: int) -> dict[str, object]:
+    _validar_sucursal_reporte(request,empresa_id)
     sucursales = listar_sucursales(empresa_id)
     if request.sucursal_id is not None and not any(s["id"] == request.sucursal_id for s in sucursales):
         raise HTTPException(status_code=422, detail="La sucursal seleccionada no existe o está inactiva.")
@@ -277,7 +357,7 @@ def generar_reporte(request: ReporteRequest, empresa_id: int) -> dict[str, objec
         raise HTTPException(status_code=422, detail="La consulta completa supera 5000 filas. Usa el detalle paginado o reduce el período para exportar.")
     filas = [{key: _presentar(value) for key, value in row.items()} for row in rows]
     medibles=[r for r in rows if request.tipo!='VENTAS' or r.get('estado','COMPLETADA')=='COMPLETADA']
-    total = sum((Decimal(str(row.get("total", row.get("monto_total", 0)) or 0)) for row in medibles), Decimal(0))
+    total = sum((Decimal(str(row.get("total", row.get("monto_total", row.get("importe",0))) or 0)) for row in medibles), Decimal(0))
     por_moneda=defaultdict(Decimal)
     for row in medibles:
         por_moneda[str(row.get('moneda') or 'BOB')]+=Decimal(str(row.get('total',row.get('monto_total',row.get('importe',0))) or 0))
@@ -291,22 +371,24 @@ def generar_reporte(request: ReporteRequest, empresa_id: int) -> dict[str, objec
             if request.tipo=='VENTAS' and row.get('estado','COMPLETADA')!='COMPLETADA':
                 continue
             fecha = row["fecha"].astimezone(ZoneInfo("America/La_Paz"))
-            key = fecha.strftime("%Y-%m" if request.agrupacion == "MES" else "%Y-%m-%d")
+            key = fecha.strftime({'MES':'%Y-%m','SEMANA':'%G-W%V','DIA':'%Y-%m-%d'}[request.agrupacion])
             if request.tipo=='PAGOS':
                 key+=' · '+str(row.get('moneda') or 'BOB')
             serie[key] += float(row.get("total", row.get("monto_total", 1)) or (0 if request.tipo in {"VENTAS", "RESERVAS", "PAGOS"} else 1))
     elif request.tipo == "PRODUCTOS_MAS_VENDIDOS":
-        serie = {f"{row['producto']} · {row['sku']}": int(row["unidades"]) for row in rows[:10]}
+        serie = {row['producto']: int(row['unidades']) for row in rows}
+    elif request.tipo in {'VENTAS_POR_SUCURSAL','INGRESOS_POR_CATEGORIA'}:
+        serie = {str(row['periodo'])+' · '+row['sucursal'] if request.tipo=='VENTAS_POR_SUCURSAL' else row['categoria']: float(row['importe']) for row in rows}
     else:
         serie = {"Bajo stock": bajo_stock, "Stock OK": len(rows) - bajo_stock}
     return {
         "tipo": request.tipo,
         "titulo": TITULOS[request.tipo],
         "importes_por_moneda": [{'moneda':m,'importe':str(v)} for m,v in sorted(por_moneda.items())],
-        "nota": "El inventario muestra el estado actual; no existe historial de snapshots para reconstruirlo por fechas." if request.tipo == "INVENTARIO" else "El valor nominal incluye reservas de todos los estados; no equivale a dinero cobrado." if request.tipo == "RESERVAS" else "Órdenes por fecha de creación, con importes nominales; el flujo cobrado se consulta en el dashboard." if request.tipo=='PAGOS' else "Los indicadores de ventas incluyen solo registros completados." if request.tipo=='VENTAS' else None,
+        "nota": "Importes de prendas vendidas con descuentos proporcionales y sin delivery; no equivalen a utilidad ni descuentan devoluciones posteriores." if request.tipo in {"PRODUCTOS_MAS_VENDIDOS","VENTAS_POR_SUCURSAL","INGRESOS_POR_CATEGORIA"} else "El inventario muestra el estado actual; no existe historial de snapshots para reconstruirlo por fechas." if request.tipo == "INVENTARIO" else "El valor nominal incluye reservas de todos los estados; no equivale a dinero cobrado." if request.tipo == "RESERVAS" else "Órdenes por fecha de creación, con importes nominales; el flujo cobrado se consulta en el dashboard." if request.tipo=='PAGOS' else "Los indicadores de ventas incluyen solo registros completados." if request.tipo=='VENTAS' else None,
         "filtros_efectivos": {**request.model_dump(mode="json"), "sucursal": next((str(s["nombre"]) for s in sucursales if s["id"] == request.sucursal_id), "Todas")},
         "generado_en": datetime.now(ZoneInfo("America/La_Paz")).isoformat(),
-        "indicadores": ([{"label": "Ventas completadas", "valor": len(medibles)}, {"label": "Unidades vendidas", "valor": unidades}, {"label": "Total ventas (Bs)", "valor": float(total)}] if request.tipo == "VENTAS" else
+        "indicadores": ([{'label':'Unidades vendidas','valor':unidades},{'label':'Importe vendido (Bs)','valor':float(total)}] if request.tipo in {'VENTAS_POR_SUCURSAL','INGRESOS_POR_CATEGORIA'} else [{"label": "Ventas completadas", "valor": len(medibles)}, {"label": "Unidades vendidas", "valor": unidades}, {"label": "Total ventas (Bs)", "valor": float(total)}] if request.tipo == "VENTAS" else
                         [{"label": "Reservas", "valor": len(rows)}, {"label": "Unidades solicitadas", "valor": unidades}, {"label": "Valor nominal (Bs)", "valor": float(total)}] if request.tipo == "RESERVAS" else
                         [{"label": "Órdenes", "valor": len(rows)}, *[{'label':f'Importe nominal de órdenes ({m})','valor':float(v)} for m,v in sorted(por_moneda.items())]] if request.tipo == "PAGOS" else
                         [{"label": "Deliveries", "valor": len(rows)}, {"label": "Costo delivery (Bs)", "valor": float(sum((Decimal(str(row.get("costo_delivery", 0) or 0)) for row in rows), Decimal(0)))}] if request.tipo == "DELIVERIES" else
@@ -314,7 +396,7 @@ def generar_reporte(request: ReporteRequest, empresa_id: int) -> dict[str, objec
                         [{"label": "Variantes", "valor": len(rows)}, {"label": "Stock real", "valor": unidades}, {"label": "Bajo stock", "valor": bajo_stock}] if request.tipo == "INVENTARIO" else
                         [{"label": "Registros", "valor": len(rows)}, {"label": "Unidades", "valor": unidades}] if request.tipo in {"PRODUCTOS_MAS_VENDIDOS", "TRANSFERENCIAS"} else
                         [{"label": "Movimientos", "valor": len(rows)}]),
-        "serie_grafico": [{"label": key, "valor": value} for key, value in sorted(serie.items())],
+        "serie_grafico": [{"label": key, "valor": value} for key, value in (serie.items() if request.tipo in {'PRODUCTOS_MAS_VENDIDOS','INGRESOS_POR_CATEGORIA','VENTAS_POR_SUCURSAL'} else sorted(serie.items()))],
         "columnas": [{"key": key, "label": key.replace("_", " ").title()} for key in filas[0]] if filas else [],
         "filas": filas,
         "total_filas": len(filas),
