@@ -123,3 +123,27 @@ def confirmar_pago_prueba(
 @router.post("/stripe/webhook")
 async def stripe_webhook(request: Request) -> dict[str, str]:
     return await webhook_stripe_service(request)
+
+
+from app.modules.ventas_inventario.schemas.pago.pago_request import CompraOffline
+
+@router.post('/offline/cotizar')
+def cotizar_compra_offline(datos: CompraOffline, actor=Depends(obtener_usuario_actual)):
+    from fastapi import HTTPException
+    from app.core.contexto_empresa import exigir_empresa_id
+    from app.modules.autenticacion.repositories.perfil_repository import _transaccion
+    from app.modules.ventas_inventario.repositories.pago_repository import obtener_items_offline
+    empresa=exigir_empresa_id(actor)
+    if 'CLIENTE' not in actor.get('roles',[]):
+        raise HTTPException(403,'Se requiere una cuenta de cliente.')
+    try:
+        with _transaccion() as cur:
+            cur.execute('SELECT 1 FROM cliente WHERE usuario_id=%s AND empresa_id=%s AND activo',(actor['id'],empresa))
+            if not cur.fetchone(): raise HTTPException(403,'Cliente no disponible.')
+            items=obtener_items_offline(cur,[i.model_dump() for i in datos.items],datos.sucursal_id,empresa)
+        return dict(id=0,codigo=str(datos.clave_operacion),estado='PENDIENTE_PAGO',
+            sucursal_id=datos.sucursal_id,total=sum(i['subtotal'] for i in items),
+            items=[dict(producto_variante_id=i['producto_variante_id'],cantidad=i['cantidad'],
+                precio_centavos=int(i['precio_unitario']*100)) for i in items])
+    except ValueError as error:
+        raise HTTPException(409,str(error)) from error

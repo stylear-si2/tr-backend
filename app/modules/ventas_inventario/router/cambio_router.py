@@ -90,3 +90,21 @@ def efectivo(cid:int,datos:Efectivo,actor=Depends(obtener_usuario_actual)):
 @router.post('/{cid}/completar')
 def completar(cid:int,datos:s.Entrega,actor=Depends(obtener_usuario_actual)):
     return s.completar(actor,cid,datos)
+
+
+@router.get('/offline/descarga')
+def descarga_offline(actor=Depends(obtener_usuario_actual)):
+    from datetime import timedelta
+    from app.core.contexto_empresa import exigir_empresa_id
+    from app.modules.ventas_inventario.services import posventa_service
+    politica=posventa_service.politica(exigir_empresa_id(actor))
+    personal=bool(set(actor.get('roles',[])) & {'ADMINISTRADOR','ENCARGADO_SUCURSAL','CAJERO'})
+    ventas=[] if personal else s.elegibles(actor)
+    # El plazo se cuenta desde entrega/compra, igual que en la validación central.
+    from app.modules.ventas_inventario.repositories import devolucion_repository as d
+    with _transaccion() as cur:
+        for venta in ventas:
+            cur.execute(f'SELECT ({d.FECHA_INICIO_POSVENTA}) inicio FROM venta v {d.ENTREGA_POSVENTA} WHERE v.id=%s AND v.empresa_id=%s', (venta['venta_id'],exigir_empresa_id(actor)))
+            inicio=cur.fetchone()['inicio']
+            venta['vence_cambio']=(inicio+timedelta(days=politica['plazo_cambios'])).isoformat() if inicio else None
+    return dict(politica=politica,ventas=ventas,cambios=s.listar(actor,personal))

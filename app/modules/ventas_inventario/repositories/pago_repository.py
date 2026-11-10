@@ -90,6 +90,7 @@ def crear_orden_desde_carrito(
     titular_pago: str | None = None,
     total_esperado: Decimal | None = None,
     version_actor: int | None = None,
+    items_offline: list[dict] | None = None,
 ) -> dict:
     if empresa_id <= 0:
         raise ValueError("La empresa es obligatoria para crear una orden.")
@@ -121,16 +122,18 @@ def crear_orden_desde_carrito(
                     if previa['solicitud_huella'] != solicitud_huella:
                         raise ValueError('Esta clave ya se utilizó para otra solicitud de pago.')
                     return dict(previa)
-            carrito_id = _obtener_carrito_activo(cursor, cliente_id, empresa_id)
-            if carrito_id is None:
-                raise ValueError("El carrito esta vacio.")
-
-            if clave_operacion:
-                cursor.execute("SELECT id FROM orden_pago WHERE empresa_id=%s AND carrito_origen_id=%s AND modo_pago='PRUEBA' AND estado='PENDIENTE'", (empresa_id,carrito_id))
-                pendiente = cursor.fetchone()
-                if pendiente:
-                    raise ValueError(f"Ya existe un pago pendiente para este carrito: orden {pendiente['id']}. Consulte o cancele ese intento.")
-            items = _obtener_items_carrito(cursor, carrito_id, sucursal_id, empresa_id)
+            carrito_id = None
+            if items_offline is not None:
+                items = obtener_items_offline(cursor, items_offline, sucursal_id, empresa_id, exigir_precio=True)
+            else:
+                carrito_id = _obtener_carrito_activo(cursor, cliente_id, empresa_id)
+                if carrito_id is None:
+                    raise ValueError('El carrito esta vacio.')
+                if clave_operacion:
+                    cursor.execute("SELECT id FROM orden_pago WHERE empresa_id=%s AND carrito_origen_id=%s AND modo_pago='PRUEBA' AND estado='PENDIENTE'", (empresa_id,carrito_id))
+                    if cursor.fetchone():
+                        raise ValueError('Ya existe un pago pendiente para este carrito.')
+                items = _obtener_items_carrito(cursor, carrito_id, sucursal_id, empresa_id)
             if not items:
                 raise ValueError("El carrito esta vacio.")
 
@@ -728,3 +731,31 @@ def _obtener_orden_cursor(cursor, orden_id: int) -> dict:
         (orden_id,),
     )
     return dict(cursor.fetchone())
+
+
+def obtener_items_offline(cursor, lineas, sucursal_id, empresa_id, exigir_precio=False):
+    from app.modules.reservas.repositories.carrito_repository import _obtener_stock_disponible_cursor
+    if not lineas or len(lineas)>100 or len({i['producto_variante_id'] for i in lineas})!=len(lineas):
+        raise ValueError('La compra debe contener variantes únicas.')
+    cursor.execute('SELECT 1 FROM sucursal WHERE id=%s AND empresa_id=%s AND activo', (sucursal_id,empresa_id))
+    if not cursor.fetchone():
+        raise ValueError('Sucursal no disponible en esta empresa.')
+    items=[]
+    for linea in sorted(lineas,key=lambda i:i['producto_variante_id']):
+        vid=linea['producto_variante_id']
+        cursor.execute('''SELECT p.nombre FROM producto_variante v
+            JOIN producto p ON p.id=v.producto_id AND p.empresa_id=v.empresa_id AND p.activo
+            JOIN categoria c ON c.id=p.categoria_id AND c.empresa_id=p.empresa_id AND c.activo
+            WHERE v.id=%s AND v.empresa_id=%s AND v.activo''',(vid,empresa_id))
+        producto=cursor.fetchone()
+        if not producto: raise ValueError('Una variante ya no pertenece al catálogo autorizado.')
+        precio=_obtener_precio_final_variante_cursor(cursor,vid,sucursal_id)
+        stock=_obtener_stock_disponible_cursor(cursor,vid,sucursal_id)
+        if not precio or precio<=0 or stock<linea['cantidad']:
+            raise ValueError('Una prenda no tiene precio vigente o stock suficiente.')
+        if exigir_precio and int(precio*100)!=linea['precio_centavos']:
+            raise ValueError('Los precios cambiaron. Actualiza y acepta la nueva cotización.')
+        items.append(dict(id=None,producto_variante_id=vid,cantidad=linea['cantidad'],
+            sucursal_id=sucursal_id,nombre=producto['nombre'],precio_unitario=precio,
+            subtotal=precio*linea['cantidad'],stock_disponible=stock))
+    return items

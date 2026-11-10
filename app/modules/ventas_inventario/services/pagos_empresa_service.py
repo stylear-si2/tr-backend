@@ -134,6 +134,9 @@ def crear_checkout(actor, request, proveedor):
         raise HTTPException(403,'Se requiere una cuenta de cliente para comprar.')
     cliente = fila['id']
     datos = request.model_dump(mode='json')
+    if datos.get('items_offline') is None: datos.pop('items_offline',None)
+    elif request.total_esperado is None or request.tipo_entrega != 'RECOJO_SUCURSAL':
+        raise HTTPException(422,'La compra offline requiere aceptar el total actualizado y recoger en sucursal.')
     huella = hashlib.sha256(json.dumps({k:v for k,v in datos.items() if k!='clave_operacion'},sort_keys=True).encode()).hexdigest()
     with bloqueo_checkout(empresa,cliente):
         with _transaccion() as cur:
@@ -154,7 +157,8 @@ def crear_checkout(actor, request, proveedor):
                 orden = repo.crear_orden_desde_carrito(cliente,actor['id'],int(delivery['sucursal_id']) if delivery else request.sucursal_id,
                     delivery,metodo='TARJETA' if proveedor=='STRIPE' else 'QR',proveedor=proveedor,empresa_id=empresa,
                     clave_operacion=str(request.clave_operacion),solicitud_huella=huella,
-                    configuracion_version=cfg['version'],titular_pago=cfg['titular'],total_esperado=request.total_esperado,version_actor=actor.get('version_acceso',0))
+                    configuracion_version=cfg['version'],titular_pago=cfg['titular'],total_esperado=request.total_esperado,version_actor=actor.get('version_acceso',0),
+                    items_offline=[i.model_dump() for i in request.items_offline] if request.items_offline is not None else None)
             except ValueError as error:
                 raise HTTPException(409,str(error)) from error
         if not orden.get('proveedor_session_id'):

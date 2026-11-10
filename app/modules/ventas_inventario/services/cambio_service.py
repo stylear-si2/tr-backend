@@ -176,6 +176,16 @@ def opciones_solicitud(actor, venta_id, linea_id, cantidad):
 def revisar(actor,cid,datos):
     with _transaccion() as cur:
         c = _acceso(cur,actor,cid,True)
+        if c['version'] != datos.version and c['estado'] != 'SOLICITADO':
+            cur.execute('SELECT observacion,revisado_por_usuario_id FROM devolucion WHERE id=%s',(cid,))
+            previa=cur.fetchone()
+            cur.execute('SELECT cantidad_no_vendible FROM devolucion_detalle WHERE devolucion_id=%s',(cid,))
+            linea=cur.fetchone()
+            aceptado=c['estado'] in ('APROBADO','COTIZADO')
+            if (c['version'] in (datos.version+1,datos.version+2) and previa['revisado_por_usuario_id']==actor['id']
+                and previa['observacion']==datos.condicion and aceptado==datos.aceptar
+                and linea['cantidad_no_vendible']==(datos.no_vendibles if datos.aceptar else 0)):
+                return _detalle(cur,cid,c['empresa_id'])
         _version(c,datos.version)
         if c['estado'] != 'SOLICITADO':
             raise HTTPException(409,'Esta solicitud ya fue revisada.')
