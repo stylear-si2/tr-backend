@@ -86,6 +86,9 @@ def avisar(cur,d,evento,texto):
             'completo': 'Cambio completado',
             'reembolsada': 'Reintegro confirmado',
         }.get(evento, 'Actualización de ' + tipo.lower())
+    if evento == 'reembolsada' and estado == 'REEMBOLSADA':
+        from .comprobante_pago_service import encolar_reembolso
+        encolar_reembolso(cur, d['empresa_id'], d['id'])
     return emitir_cliente(cur,d['empresa_id'],d['cliente_id'],f"devolucion:{d['id']}:{evento}",
                           titulo,texto,categoria,tipo,d['id'])
 

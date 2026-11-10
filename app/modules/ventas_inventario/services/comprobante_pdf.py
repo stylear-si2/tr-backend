@@ -93,7 +93,7 @@ def generar_comprobante_pdf(datos, *, directorio_logos=DIRECTORIO_LOGOS):
     if datos.get('cliente'):
         contenido.append(_parrafo(f"Cliente: {datos['cliente']}"))
     if datos.get('metodo'):
-        contenido.append(_parrafo(f"Método de pago: {datos['metodo']}"))
+        contenido.append(_parrafo(f"{datos.get('etiqueta_metodo', 'Método de pago')}: {datos['metodo']}"))
     for etiqueta, valor in datos.get('referencias', []):
         contenido.append(_parrafo(f'{etiqueta}: {valor}'))
     contenido += [Spacer(1, 17), _parrafo('Detalle de la operación', size=12, negrita=True), Spacer(1, 7)]
@@ -125,7 +125,7 @@ def generar_comprobante_pdf(datos, *, directorio_logos=DIRECTORIO_LOGOS):
         for etiqueta, valor in datos.get('importes', [])
     ]
     totales.append([
-        _parrafo('Total pagado', color=VIOLETA, size=13, negrita=True),
+        _parrafo(datos.get('etiqueta_total', 'Total pagado'), color=VIOLETA, size=13, negrita=True),
         _parrafo(dinero(datos['total']), color=VIOLETA, size=13, negrita=True, derecha=True),
     ])
     resumen = Table(totales, colWidths=[167, 110], hAlign='RIGHT')

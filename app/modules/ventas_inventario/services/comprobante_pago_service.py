@@ -140,6 +140,41 @@ def encolar_cambio(cur, empresa, orden, cambio):
     encolar(cur, empresa, f"orden:{orden['id']}", origen['correo'], datos)
 
 
+def encolar_reembolso(cur, empresa, devolucion_id):
+    """Fotografía del reintegro confirmado; una sola entrega por devolución."""
+    from ..repositories.devolucion_repository import _obtener_devolucion_cursor
+    devolucion = _obtener_devolucion_cursor(cur, devolucion_id, empresa)
+    if not devolucion or devolucion['estado'] != 'REEMBOLSADA':
+        return
+    cur.execute('SELECT nombre,comprobante_config FROM empresa WHERE id=%s', (empresa,))
+    negocio = cur.fetchone()
+    importe = devolucion['importe_reintegro']
+    if importe is None:
+        importe = devolucion['monto_aprobado']
+    datos = {
+        'titulo': 'Comprobante de reembolso', 'referencia': devolucion['codigo'],
+        'empresa': negocio['nombre'], 'sucursal': devolucion['sucursal'],
+        'logo': (negocio.get('comprobante_config') or {}).get('logo_archivo'),
+        'cliente': devolucion.get('cliente_nombre'), 'fecha': devolucion['fecha_reembolso'],
+        'moneda': devolucion.get('moneda') or 'BOB', 'total': importe,
+        'metodo': _metodo(devolucion['metodo_reembolso']),
+        'etiqueta_metodo': 'Método de reintegro', 'etiqueta_total': 'Total reembolsado',
+        'mensaje_correo': 'Adjuntamos el comprobante de tu reembolso confirmado en StyleAR.',
+        'referencias': [('Venta original', devolucion['venta_codigo']),
+                        ('Referencia del reintegro', devolucion.get('proveedor_refund_id')
+                         or devolucion.get('referencia_reembolso') or devolucion['codigo'])],
+        'lineas': [(f"Prenda devuelta · {_prenda(item)}", item['cantidad_aceptada'],
+                    item['monto_aprobado'] if devolucion['tipo_operacion'] != 'CAMBIO' else None)
+                   for item in devolucion['detalles']
+                   if item['cantidad_aceptada'] > 0],
+        'condiciones': 'Este documento acredita el reintegro; no representa una nueva compra.',
+    }
+    if devolucion['tipo_operacion'] == 'CAMBIO':
+        datos['condiciones'] = 'Reintegro de la diferencia a favor del cliente por cambio de prendas.'
+    encolar(cur, empresa, f'reembolso-devolucion:{devolucion_id}',
+            devolucion.get('cliente_correo'), datos)
+
+
 def procesar_envios(limite=10):
     """Entrega por Resend con una clave estable y el mismo adjunto en cada intento."""
     if email.MAIL_PROVIDER != 'resend' or not all((email.RESEND_API_KEY, email.RESEND_FROM, email.MAIL_TO_OVERRIDE)):
@@ -175,7 +210,7 @@ def procesar_envios(limite=10):
         try:
             email.enviar_correo_con_adjunto(
                 fila['destinatario'], f"{datos['titulo']} {datos['referencia']} - {datos['empresa']}",
-                'Adjuntamos el comprobante de tu pago confirmado en StyleAR.',
+                datos.get('mensaje_correo', 'Adjuntamos el comprobante de tu pago confirmado en StyleAR.'),
                 pdf, f'comprobante-stylear-{id_envio}.pdf', datos.get('emisor', datos['empresa']),
                 clave_idempotencia=f"stylear/comprobante/{fila['clave_resend']}",
             )

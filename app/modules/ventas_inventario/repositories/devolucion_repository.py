@@ -468,6 +468,9 @@ def actualizar_resultado_stripe(
                 connection.commit()
                 return None
             resultado = _obtener_devolucion_cursor(cursor, devolucion_id, empresa_id)
+            if estado_devolucion == 'REEMBOLSADA':
+                from ..services.comprobante_pago_service import encolar_reembolso
+                encolar_reembolso(cursor, empresa_id, devolucion_id)
         connection.commit()
         return resultado
     except Exception:
