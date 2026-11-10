@@ -1,3 +1,4 @@
+from app.modules.administracion.router.apariencia_router import router as apariencia_router
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import CORS_ORIGINS
@@ -84,6 +85,7 @@ app.include_router(perfil_router)
 app.include_router(rol_permiso_router)
 app.include_router(usuario_admin_router)
 app.include_router(empresa_publica_router)
+app.include_router(apariencia_router)
 app.include_router(registro_empresa_router)
 app.include_router(empresa_saas_router)
 app.include_router(respaldo_router)
@@ -180,7 +182,7 @@ def verificar_migracion_multitenant():
         for version in ('2026_11_05_cu25_respaldos_r2','2026_11_05_cu26_planes','2026_11_06_cu22_cu27_mejoras',
                         '2026_11_07_cu26_stripe','2026_11_08_cu21_offline','2026_11_08_cu19_prenda_adicional',
                         '2026_11_08_posventa_no_vendible','2026_11_08_cu26_planes_usd',
-                        '2026_11_08_cu26_contratacion_planes','2026_11_09_comprobantes_pago'):
+                        '2026_11_08_cu26_contratacion_planes','2026_11_09_comprobantes_pago','2026_11_10_empresa_apariencia'):
             cur.execute('SELECT 1 FROM schema_migrations WHERE version=%s',(version,))
             if cur.fetchone() is None:
                 raise RuntimeError(f'Falta la migración {version}; ejecute init_db.py antes de iniciar la API.')
