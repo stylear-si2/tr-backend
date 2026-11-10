@@ -112,8 +112,8 @@ def registrar(cur,d,uid,tipo,anterior,observacion):
     from .pagos_empresa_service import notificar
     orden=pagada(cur,d['empresa_id'],d['venta_id'])
     if orden:
-        notificar(cur,dict(orden),f"delivery:{d['id']}:{d.get('version',1)}",'Actualización de entrega',
-                  f"Entrega #{d['id']}: {d['estado']}. "+('Existe una incidencia pendiente de coordinación.' if d.get('incidencia_abierta') else 'Consulta el seguimiento desde Mis entregas.'))
+        notificar(cur,dict(orden),f"delivery:{d['id']}:{d.get('version',1)}",{'EN_CAMINO':'Delivery en camino','ENTREGADO':'Delivery entregado','EN_PREPARACION':'Delivery en preparación','CANCELADO':'Delivery cancelado','PENDIENTE':'Delivery registrado'}.get(d['estado'],'Actualización de entrega'),
+                  f"Entrega #{d['id']}: {d['estado'].replace('_', ' ').lower()}. "+('Existe una incidencia pendiente de coordinación.' if d.get('incidencia_abierta') else 'Consulta el seguimiento desde Mis entregas.'))
     cur.execute("INSERT INTO bitacora(usuario_id,empresa_id,accion,modulo,descripcion) VALUES(%s,%s,%s,'DELIVERY',%s)",
                 (uid,d['empresa_id'],tipo,f"Entrega {d['id']}: {d['estado']} · versión {d.get('version',1)}"))
 

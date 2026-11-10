@@ -47,8 +47,10 @@ def test_payload_android_prioridad_canal_y_evento_sin_datos_privados(monkeypatch
         mensajes.append(kwargs['json']['message'])
         return SimpleNamespace(status_code=200,json=lambda:{'name':'FCM/aceptado'})
     monkeypatch.setattr(push_worker.httpx,'post',post)
+    monkeypatch.setattr(push_worker,'contenido_aviso',lambda nid,empresa: {'title':'Devolución aprobada','body':'Tu devolución fue aprobada.'})
     assert push_worker.enviar_fcm('token-simulado',4,7)=='FCM/aceptado'
     m=mensajes[0]
+    assert m['notification']=={'title':'Devolución aprobada','body':'Tu devolución fue aprobada.'}
     assert m['data']=={'notificacion_id':'4','empresa_id':'7'}
     assert m['android']=={'priority':'HIGH','ttl':'86400s','notification':{
         'channel_id':CANAL_ANDROID,'tag':'stylear_7_4'}}

@@ -161,7 +161,7 @@ def usuario_cursor(cur, uid, empresa, solo_ad=False, bloquear=False):
     return dict(fila)
 
 
-def listar(actor, empresa, estado="ACTIVOS", busqueda="", pagina=1, por_pagina=25):
+def listar(actor, empresa, estado="ACTIVOS", busqueda="", pagina=1, por_pagina=25, rol=None):
     alcance(actor, empresa)
     solo_ad = actor.get("empresa_id") is None and empresa is not None
     where = condicion(empresa, solo_ad)
@@ -172,6 +172,13 @@ def listar(actor, empresa, estado="ACTIVOS", busqueda="", pagina=1, por_pagina=2
     if busqueda:
         where += " AND concat_ws(' ',u.nombre,u.apellido,u.username,u.correo) ILIKE %s"
         params.append("%" + busqueda + "%")
+    if rol:
+        existe = "EXISTS(SELECT 1 FROM usuario_rol ur JOIN rol r ON r.id=ur.rol_id WHERE ur.usuario_id=u.id AND ur.activo AND r.activo"
+        if rol == 'SIN_ROL':
+            where += ' AND NOT ' + existe + ')'
+        else:
+            where += ' AND ' + existe + ' AND r.nombre=%s)'
+            params.append(rol)
     with _transaccion(isolation_level="REPEATABLE READ", readonly=True) as cur:
         validar_actor(cur, actor, "usuarios:ver")
         if empresa is not None:

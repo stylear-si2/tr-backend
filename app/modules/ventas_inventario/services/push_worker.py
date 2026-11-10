@@ -9,6 +9,15 @@ from app.modules.autenticacion.repositories.perfil_repository import _transaccio
 from app.modules.ventas_inventario.services.notificaciones_service import CANAL_ANDROID
 
 
+def contenido_aviso(nid, empresa):
+    with _transaccion() as cur:
+        cur.execute('SELECT titulo,mensaje FROM notificacion_usuario WHERE id=%s AND empresa_id=%s', (nid, empresa))
+        aviso = cur.fetchone()
+        if not aviso:
+            raise ValueError('Notificación no encontrada en la empresa.')
+        return {'title': str(aviso['titulo'])[:120], 'body': str(aviso['mensaje'])[:800]}
+
+
 def enviar_fcm(token,nid,empresa):
     from google.oauth2 import service_account
     from google.auth.transport.requests import Request
@@ -20,7 +29,7 @@ def enviar_fcm(token,nid,empresa):
     cred.refresh(Request())
     response=httpx.post(f'https://fcm.googleapis.com/v1/projects/{proyecto}/messages:send',timeout=10,
         headers={'Authorization':'Bearer '+cred.token},json={'message':{'token':token,
-            'notification':{'title':'StyleAR','body':'Tienes una actualización. Abre la aplicación para consultarla.'},
+            'notification':contenido_aviso(nid,empresa),
             'data':{'notificacion_id':str(nid),'empresa_id':str(empresa)},
             'android':{'priority':'HIGH','ttl':'86400s','notification':{
                 'channel_id':CANAL_ANDROID,'tag':f'stylear_{empresa}_{nid}'}}}})

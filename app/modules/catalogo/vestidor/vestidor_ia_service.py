@@ -3,6 +3,10 @@ import shutil
 import time
 import uuid
 import base64
+import logging
+import tempfile
+from contextvars import ContextVar
+from pathlib import Path
 import requests
 from io import BytesIO
 from dotenv import load_dotenv
@@ -24,7 +28,14 @@ from app.modules.catalogo.vestidor.vestidor_repository import registrar_sesion_v
 STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))), "static")
 MODELS_DIR = os.path.join(STATIC_DIR, "models")
 IMAGES_DIR = os.path.join(STATIC_DIR, "images")
-TRYON_DIR = os.path.join(STATIC_DIR, "tryon")
+TRYON_DIR = str(Path(STATIC_DIR).parent / '.private' / 'vestidor_temporal')
+_TRABAJO_ACTUAL = ContextVar('vestidor_trabajo', default=None)
+
+def _directorio_trabajo():
+    ruta = _TRABAJO_ACTUAL.get()
+    if ruta is None:
+        raise RuntimeError('No hay un trabajo privado de vestidor activo.')
+    return ruta
 CUTOUTS_DIR = os.path.join(STATIC_DIR, "images", "cutouts")
 POSE_MODEL_PATH = os.path.join(MODELS_DIR, "pose_landmarker.task")
 
@@ -76,7 +87,7 @@ def _get_pose_detector():
             _pose_detector = vision.PoseLandmarker.create_from_options(options)
             print("[MediaPipe] Pose Landmarker inicializado correctamente.")
         except Exception as e:
-            print(f"[MediaPipe] Error al inicializar detector: {e}")
+            print("[Vestidor IA] No se completó una operación del motor.")
     return _pose_detector
 
 
@@ -94,7 +105,7 @@ def _detectar_postura(user_img_path: str):
             mask_np = detection_result.segmentation_masks[0].numpy_view()[:, :, 0]
         return landmarks, mask_np
     except Exception as e:
-        print(f"[MediaPipe] Error en detección de postura: {e}")
+        print("[Vestidor IA] No se completó una operación del motor.")
         return None, None
 
 
@@ -157,7 +168,7 @@ def _aplicar_preservacion_anatomica(orig_pil: Image.Image, neural_pil: Image.Ima
             print("[Preservación Anatómica] Rostro y parte inferior preservados al 100%.")
             return Image.fromarray(blended)
     except Exception as e:
-        print(f"[Preservación Anatómica] Error en blend anatómico: {e}")
+        print("[Vestidor IA] No se completó una operación del motor.")
         return neural_pil
 
 
@@ -227,18 +238,17 @@ def generar_token_webrtc_decart(duracion_segundos: int = 300) -> dict[str, objec
         return {
             "status": "ok",
             "token": token_resp.token,
-            "api_key": token_resp.api_key,
             "expires_at": token_resp.expires_at,
             "model": "lucy-vton-3.5",
             "webrtc_url": "https://api.decart.ai/v1/stream",
             "duracion_segundos": duracion_segundos,
         }
     except Exception as e:
-        print(f"[Decart WebRTC] Error al generar token: {e}")
+        logging.getLogger(__name__).warning('No se pudo emitir token de vestidor: %s', type(e).__name__)
         raise HTTPException(
             status_code=502,
-            detail=f"Error al generar token de streaming con Decart AI: {e}",
-        ) from e
+            detail="No se pudo generar la sesión de streaming. Intenta nuevamente.",
+        ) from None
 
 
 def _intentar_tryon_decart(user_img_path: str, garm_img_path: str, tipo_prenda: str) -> str | None:
@@ -273,8 +283,8 @@ def _intentar_tryon_decart(user_img_path: str, garm_img_path: str, tipo_prenda: 
         img_resized = cv2.resize(img, (target_w, target_h))
 
         unique_token = f"{int(time.time())}_{uuid.uuid4().hex[:6]}"
-        temp_in_video = os.path.join(TRYON_DIR, f"decart_in_{unique_token}.mp4")
-        temp_out_video = os.path.join(TRYON_DIR, f"decart_out_{unique_token}.mp4")
+        temp_in_video = os.path.join(_directorio_trabajo(), f"decart_in_{unique_token}.mp4")
+        temp_out_video = os.path.join(_directorio_trabajo(), f"decart_out_{unique_token}.mp4")
 
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         writer = cv2.VideoWriter(temp_in_video, fourcc, 10.0, (target_w, target_h))
@@ -305,7 +315,10 @@ def _intentar_tryon_decart(user_img_path: str, garm_img_path: str, tipo_prenda: 
                     return job_result.data
                 return None
 
-        result_bytes = _run_async(_run_decart)
+        async def _run_limitado():
+            return await asyncio.wait_for(_run_decart(), timeout=55)
+
+        result_bytes = _run_async(_run_limitado)
         if not result_bytes:
             print("[Decart AI] Decart no devolvió datos de resultado.")
             return None
@@ -326,13 +339,13 @@ def _intentar_tryon_decart(user_img_path: str, garm_img_path: str, tipo_prenda: 
             print("[Decart AI] No se pudo extraer fotograma del video generado.")
             return None
 
-        out_file = os.path.join(TRYON_DIR, f"decart_{unique_token}.jpg")
+        out_file = os.path.join(_directorio_trabajo(), f"decart_{unique_token}.jpg")
         cv2.imwrite(out_file, frame)
         print(f"[Decart AI] ¡Inferencia fotorrealista completada con éxito! -> {out_file}")
         return out_file
 
     except Exception as e:
-        print(f"[Decart AI] Error o excepción durante inferencia Lucy VTON: {e}")
+        print("[Vestidor IA] No se completó una operación del motor.")
         return None
     finally:
         for temp_f in [temp_in_video, temp_out_video]:
@@ -369,7 +382,7 @@ def _intentar_tryon_fashn(user_img_path: str, garm_img_path: str, tipo_prenda: s
         }
         resp = requests.post("https://api.fashn.ai/v1/run", json=payload, headers=headers, timeout=25)
         if resp.status_code not in [200, 201]:
-            print(f"[FASHN.ai] Error al enviar tarea: {resp.status_code} - {resp.text}")
+            print(f"[FASHN.ai] Solicitud rechazada, estado {resp.status_code}")
             return None
 
         task_id = resp.json().get("id")
@@ -389,16 +402,16 @@ def _intentar_tryon_fashn(user_img_path: str, garm_img_path: str, tipo_prenda: s
                 if outputs:
                     img_url = outputs[0]
                     img_data = requests.get(img_url, timeout=20).content
-                    out_file = os.path.join(TRYON_DIR, f"fashn_{task_id}_{int(time.time())}.jpg")
+                    out_file = os.path.join(_directorio_trabajo(), f"fashn_{uuid.uuid4().hex}.jpg")
                     with open(out_file, "wb") as f:
                         f.write(img_data)
                     print(f"[FASHN.ai] Inferencia generativa completada exitosamente -> {out_file}")
                     return out_file
             elif status in ["failed", "cancelled"]:
-                print(f"[FASHN.ai] Tarea falló: {data.get('error')}")
+                print("[FASHN.ai] El proveedor no completó la tarea.")
                 return None
     except Exception as e:
-        print(f"[FASHN.ai] Excepción durante tryon: {e}")
+        print("[Vestidor IA] No se completó una operación del motor.")
     return None
 
 
@@ -432,7 +445,7 @@ def _intentar_tryon_leffa(user_img_path: str, garm_img_path: str, tipo_prenda: s
                 print(f"[Leffa] Inferencia generativa completada exitosamente -> {gen_img}")
                 return gen_img
     except Exception as e:
-        print(f"[Leffa] Error o límite de cuota en Leffa: {e}")
+        print("[Vestidor IA] No se completó una operación del motor.")
     return None
 
 
@@ -463,7 +476,7 @@ def _intentar_tryon_ootd(user_img_path: str, garm_img_path: str, tipo_prenda: st
                 print(f"[OOTDiffusion] Inferencia generativa completada exitosamente -> {img_path}")
                 return img_path
     except Exception as e:
-        print(f"[OOTDiffusion] Error o límite de cuota en OOTDiffusion: {e}")
+        print("[Vestidor IA] No se completó una operación del motor.")
     return None
 
 
@@ -490,7 +503,7 @@ def _intentar_tryon_idm_vton(user_img_path: str, garm_img_path: str, description
             print(f"[IDM-VTON] Inferencia generativa completada exitosamente -> {result[0]}")
             return result[0]
     except Exception as e:
-        print(f"[IDM-VTON] Error o límite de cuota en IDM-VTON: {e}")
+        print("[Vestidor IA] No se completó una operación del motor.")
     return None
 
 
@@ -649,7 +662,7 @@ def _calzar_prenda_superior(user_pil: Image.Image, producto_id: int, landmarks, 
     return canvas.convert("RGB")
 
 
-def procesar_tryon_ia(
+def _procesar_tryon_ia_privado(
     imagen_bytes: bytes,
     producto_id: int,
     empresa_id: int,
@@ -693,11 +706,11 @@ def procesar_tryon_ia(
         user_img_resized = user_img
 
     unique_id = f"tryon_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-    temp_user_path = os.path.join(TRYON_DIR, f"temp_{unique_id}.jpg")
+    temp_user_path = os.path.join(_directorio_trabajo(), f"temp_{unique_id}.jpg")
     user_img_resized.save(temp_user_path, "JPEG", quality=92)
 
     out_filename = f"{unique_id}.jpg"
-    out_path = os.path.join(TRYON_DIR, out_filename)
+    out_path = os.path.join(_directorio_trabajo(), out_filename)
 
     # 3. Detectar postura anatómica y silueta humana con MediaPipe
     landmarks, mask_np = _detectar_postura(temp_user_path)
@@ -749,16 +762,15 @@ def procesar_tryon_ia(
     except Exception:
         pass
 
-    base = host_base_url or "https://impromptu-uncertain-grading.ngrok-free.dev"
-    if base.endswith("/"):
-        base = base[:-1]
-    resultado_url = f"{base}/static/tryon/{out_filename}"
+    # El resultado viaja al cliente en esta respuesta, no por una URL pública.
+    imagen_resultado = base64.b64encode(Path(out_path).read_bytes()).decode('ascii')
 
     elapsed_ms = int((time.time() - start_time) * 1000)
 
     return {
         "status": "ok",
-        "imagen_resultado_url": resultado_url,
+        "imagen_resultado_base64": imagen_resultado,
+        "imagen_mime_type": "image/jpeg",
         "producto_id": producto_id,
         "producto_nombre": nombre_prenda,
         "tipo_prenda": tipo_prenda,
@@ -767,3 +779,25 @@ def procesar_tryon_ia(
         "metodo": metodo_usado,
         "tiempo_procesamiento_ms": elapsed_ms,
     }
+
+
+def procesar_tryon_ia(imagen_bytes, producto_id, empresa_id, talla=None, color=None, cliente_id=None, host_base_url=None):
+    """Todos los ficheros del trabajo viven en un directorio privado efímero."""
+    try:
+        with Image.open(BytesIO(imagen_bytes)) as prueba:
+            if prueba.width * prueba.height > 16_000_000:
+                raise HTTPException(413, 'La foto tiene demasiados píxeles. Usa una imagen de hasta 16 MP.')
+            if prueba.format not in {'JPEG','PNG','WEBP'}:
+                raise HTTPException(400, 'Selecciona una foto JPEG, PNG o WebP.')
+            prueba.verify()
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(400, 'La imagen está dañada o no es una foto válida.') from None
+    Path(TRYON_DIR).mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='trabajo_', dir=TRYON_DIR) as carpeta:
+        contexto = _TRABAJO_ACTUAL.set(carpeta)
+        try:
+            return _procesar_tryon_ia_privado(imagen_bytes, producto_id, empresa_id, talla, color, cliente_id, host_base_url)
+        finally:
+            _TRABAJO_ACTUAL.reset(contexto)

@@ -8,3 +8,5 @@ pytest-cache-files-*/
 .DS_Store
 .private/
 *.fernet
+
+dependencias-local.log

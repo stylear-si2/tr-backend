@@ -31,10 +31,11 @@ def pagina(
     busqueda: str = Query("", max_length=160),
     pagina: int = Query(1, ge=1),
     por_pagina: int = Query(25, ge=1, le=200),
+    rol: str | None = Query(None, max_length=80),
     actor=Depends(admin("usuarios:ver")),
 ):
     return acceso.listar(
-        actor, actor["empresa_id"], estado, busqueda, pagina, por_pagina
+        actor, actor["empresa_id"], estado, busqueda, pagina, por_pagina, rol
     )
 
 
@@ -89,9 +90,10 @@ def saas_lista(
     busqueda: str = Query("", max_length=160),
     pagina: int = Query(1, ge=1),
     por_pagina: int = Query(25, ge=1, le=200),
+    rol: str | None = Query(None, max_length=80),
     actor=Depends(requerir_admin_saas),
 ):
-    return acceso.listar(actor, empresa_id, estado, busqueda, pagina, por_pagina)
+    return acceso.listar(actor, empresa_id, estado, busqueda, pagina, por_pagina, rol)
 
 
 @router.post("/saas/usuarios", status_code=201, response_model=UsuarioAdminResponse)

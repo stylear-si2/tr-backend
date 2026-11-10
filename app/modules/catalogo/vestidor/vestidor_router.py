@@ -4,9 +4,12 @@ import json
 import os
 import urllib.parse
 import uuid
+import time
 
 import aiohttp
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from starlette.concurrency import run_in_threadpool
+from app.modules.catalogo.vestidor.vestidor_seguridad import (exigir_cliente, exigir_cliente_live, propietario, limitar, emitir_bridge, cliente_id_autorizado, foto_en_curso, error_proveedor, cliente_sigue_vigente, MAX_SECONDS, MAX_IMAGE_BYTES)
 from fastapi.responses import HTMLResponse
 
 from app.core.contexto_empresa import exigir_empresa_publica
@@ -53,9 +56,11 @@ def get_prendas_carrusel(limite: int = 30, empresa_id: int = Depends(exigir_empr
     response_model=SesionVestidorResponse,
     summary="Registrar trazabilidad de prueba virtual en vestidor",
 )
-def post_sesion_vestidor(request: CrearSesionVestidorRequest, empresa_id: int = Depends(exigir_empresa_publica)) -> SesionVestidorResponse:
+def post_sesion_vestidor(request: CrearSesionVestidorRequest, usuario: dict = Depends(exigir_cliente)) -> SesionVestidorResponse:
+    empresa_id = int(usuario["empresa_id"])
     exigir_funcion_empresa(empresa_id, "vestidor")
-    return guardar_sesion_vestidor(request, empresa_id)
+    limitar(usuario, "registro", 10)
+    return guardar_sesion_vestidor(request, empresa_id, cliente_id=cliente_id_autorizado(usuario))
 
 
 @router.get(
@@ -75,37 +80,58 @@ def get_vestidor_config(empresa_id: int = Depends(exigir_empresa_publica)) -> di
 ACTIVE_DECART_SESSIONS: dict[str, dict] = {}
 
 
-async def _keep_decart_alive(session_id: str, ws: aiohttp.ClientWebSocketResponse, session: aiohttp.ClientSession):
-    """Mantiene la conexión WebSocket de control con Decart viva en segundo plano."""
+_ABRIENDO_SESIONES: set[tuple] = set()
+
+async def _liberar_conexion(ws, session):
+    for recurso in (ws, session):
+        if recurso is not None and not recurso.closed:
+            try: await recurso.close()
+            except Exception as error: error_proveedor('cierre',error)
+
+_INTERVALO_VALIDACION = 5
+
+async def _keep_decart_alive(session_id, ws, session, usuario):
     try:
-        print(f"[Decart WS Bridge] Iniciando loop de escucha para {session_id}")
-        while True:
-            msg = await ws.receive()
-            if msg.type == aiohttp.WSMsgType.TEXT:
-                # Mensaje de texto informativo de Decart (session_id, acks, etc.)
-                pass
-            elif msg.type in (
-                aiohttp.WSMsgType.CLOSE,
-                aiohttp.WSMsgType.CLOSED,
-                aiohttp.WSMsgType.CLOSING,
-                aiohttp.WSMsgType.ERROR,
-            ):
-                print(f"[Decart WS Bridge] Socket cerrado por servidor Decart para {session_id}: {msg.type}")
-                break
-    except asyncio.CancelledError:
-        print(f"[Decart WS Bridge] Tarea cancelada para {session_id}")
-    except Exception as e:
-        print(f"[Decart WS Bridge] Sesión {session_id} excepción: {e}")
+        async with asyncio.timeout(MAX_SECONDS):
+            siguiente_revision=time.monotonic()+_INTERVALO_VALIDACION
+            while True:
+                msg=None
+                try:
+                    msg = await asyncio.wait_for(ws.receive(), timeout=max(.001,siguiente_revision-time.monotonic()))
+                except TimeoutError:
+                    pass
+                if time.monotonic() >= siguiente_revision:
+                    if not await run_in_threadpool(cliente_sigue_vigente, usuario): break
+                    siguiente_revision=time.monotonic()+_INTERVALO_VALIDACION
+                if msg is not None and msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.ERROR):
+                    break
+    except (asyncio.CancelledError, TimeoutError):
+        pass
+    except Exception as error:
+        error_proveedor('escucha', error)
     finally:
         ACTIVE_DECART_SESSIONS.pop(session_id, None)
-        try:
-            if not ws.closed:
-                await ws.close()
-            if not session.closed:
-                await session.close()
-        except Exception:
-            pass
-        print(f"[Decart WS Bridge] Limpieza de sesión {session_id} finalizada.")
+        await _liberar_conexion(ws,session)
+
+async def _cerrar_sesion_live(session_id):
+    sess=ACTIVE_DECART_SESSIONS.pop(session_id,None)
+    if sess:
+        sess['task'].cancel()
+        try: await sess['task']
+        except asyncio.CancelledError: pass
+        finally:
+            await _liberar_conexion(sess['ws'],sess['session'])
+
+def _sesion_propia(session_id, usuario):
+    sess=ACTIVE_DECART_SESSIONS.get(session_id)
+    if sess and sess.get('propietario') != propietario(usuario):
+        raise HTTPException(404,'Sesión no encontrada.')
+    return sess
+
+@router.on_event('shutdown')
+async def cerrar_sesiones_vestidor():
+    for sid in list(ACTIVE_DECART_SESSIONS):
+        await _cerrar_sesion_live(sid)
 
 
 async def _obtener_imagen_prenda_b64(producto_id: int, empresa_id: int) -> tuple[str, str]:
@@ -143,21 +169,7 @@ async def _obtener_imagen_prenda_b64(producto_id: int, empresa_id: int) -> tuple
                     with open(img_url, "rb") as f:
                         img_bytes = f.read()
     except Exception as e:
-        print(f"[Vestidor Realtime] Error al obtener imagen real de producto {producto_id}: {e}")
-
-    # Fallback de seguridad en caso de que el producto no tenga imagen en BD o falle la red
-    if not img_bytes:
-        from app.modules.catalogo.vestidor.vestidor_ia_service import GARMENT_AI_CONFIG
-        cfg = GARMENT_AI_CONFIG.get(producto_id, GARMENT_AI_CONFIG.get(1, {}))
-        img_path = cfg.get("image")
-        if not img_path or not os.path.exists(img_path):
-            for c in GARMENT_AI_CONFIG.values():
-                if os.path.exists(c.get("image", "")):
-                    img_path = c["image"]
-                    break
-        if img_path and os.path.exists(img_path):
-            with open(img_path, "rb") as f:
-                img_bytes = f.read()
+        error_proveedor('imagen_prenda', e)
 
     if not img_bytes:
         raise HTTPException(status_code=404, detail="No se pudo obtener la imagen de la prenda.")
@@ -171,115 +183,75 @@ async def _obtener_imagen_prenda_b64(producto_id: int, empresa_id: int) -> tuple
     "/sesion-realtime",
     summary="Crear sesión WebRTC en vivo con Decart Lucy VTON 3.5 (WebSocket persistente)",
 )
-async def post_sesion_realtime(producto_id: int = 1, empresa_id: int = Depends(exigir_empresa_publica)) -> dict[str, object]:
-    exigir_funcion_empresa(empresa_id, "vestidor")
-    from app.modules.catalogo.vestidor.vestidor_ia_service import _get_decart_api_key
-
-    api_key = _get_decart_api_key()
-    if not api_key:
-        raise HTTPException(status_code=503, detail="DECART_API_KEY no configurada.")
-    api_key = api_key.strip()
-
-    img_b64, prompt = await _obtener_imagen_prenda_b64(producto_id, empresa_id)
-
-    url = f"wss://api3.decart.ai/v1/stream?api_key={urllib.parse.quote(api_key)}&model=lucy-vton-3.5&livekit_early_room_info=true"
-
-    session = aiohttp.ClientSession()
+async def post_sesion_realtime(producto_id: int = Query(1, gt=0), usuario: dict = Depends(exigir_cliente_live)) -> dict[str, object]:
+    empresa_id=int(usuario['empresa_id'])
+    exigir_funcion_empresa(empresa_id, 'vestidor')
+    limitar(usuario,'inicio_live',3)
+    owner=propietario(usuario)
+    clave=owner[:2]
+    if clave in _ABRIENDO_SESIONES or any(x['propietario'][:2] == clave for x in ACTIVE_DECART_SESSIONS.values()):
+        raise HTTPException(429,'Ya tienes una sesión activa. Páusala antes de iniciar otra.')
+    if sum(x['propietario'][0]==empresa_id for x in ACTIVE_DECART_SESSIONS.values()) + sum(x[0]==empresa_id for x in _ABRIENDO_SESIONES) >= 5:
+        raise HTTPException(429,'El vestidor de la tienda está ocupado. Intenta más tarde.')
+    _ABRIENDO_SESIONES.add(clave)
+    session=None
+    ws=None
     try:
-        ws = await session.ws_connect(url, timeout=aiohttp.ClientTimeout(total=20))
-        set_img_msg = {
-            "type": "set_image",
-            "image_data": img_b64,
-            "prompt": prompt,
-        }
-        await ws.send_str(json.dumps(set_img_msg))
-        await ws.receive_str()
-        await ws.send_str(json.dumps({"type": "livekit_join"}))
-        room_info = json.loads(await ws.receive_str())
-
-        session_id = room_info.get("session_id") or str(uuid.uuid4())
-
-        # Mantener el socket vivo en segundo plano para que Decart no desconecte la sala LiveKit
-        task = asyncio.create_task(_keep_decart_alive(session_id, ws, session))
-        ACTIVE_DECART_SESSIONS[session_id] = {
-            "ws": ws,
-            "session": session,
-            "task": task,
-            "producto_id": producto_id,
-            "empresa_id": empresa_id,
-        }
-
-        return {
-            "status": "ok",
-            "livekit_url": room_info.get("livekit_url"),
-            "token": room_info.get("token"),
-            "room_name": room_info.get("room_name"),
-            "session_id": session_id,
-            "producto_id": producto_id,
-        }
-    except Exception as e:
-        await session.close()
-        print(f"[Decart Realtime] Error al conectar sesión: {e}")
-        raise HTTPException(status_code=502, detail=f"Error al iniciar streaming Decart: {e}") from e
+        from app.modules.catalogo.vestidor.vestidor_ia_service import _get_decart_api_key
+        api_key=_get_decart_api_key()
+        if not api_key: raise HTTPException(503,'El vestidor en vivo no está configurado.')
+        img_b64,prompt=await _obtener_imagen_prenda_b64(producto_id,empresa_id)
+        url=f'wss://api3.decart.ai/v1/stream?api_key={urllib.parse.quote(api_key.strip())}&model=lucy-vton-3.5&livekit_early_room_info=true'
+        session=aiohttp.ClientSession()
+        async with asyncio.timeout(25):
+            ws=await session.ws_connect(url,timeout=aiohttp.ClientTimeout(total=20))
+            await ws.send_str(json.dumps({'type':'set_image','image_data':img_b64,'prompt':prompt}))
+            await ws.receive_str()
+            await ws.send_str(json.dumps({'type':'livekit_join'}))
+            room_info=json.loads(await ws.receive_str())
+        if not all(isinstance(room_info.get(k),str) and room_info[k] for k in ('livekit_url','token','room_name')):
+            raise ValueError('Respuesta incompleta del proveedor')
+        session_id=uuid.uuid4().hex
+        task=asyncio.create_task(_keep_decart_alive(session_id,ws,session,{k:usuario[k] for k in ('id','empresa_id','_sesion_id','version_acceso') if k in usuario}))
+        ACTIVE_DECART_SESSIONS[session_id]={'ws':ws,'session':session,'task':task,'producto_id':producto_id,'empresa_id':empresa_id,'propietario':owner}
+        return {'status':'ok','livekit_url':room_info['livekit_url'],'token':room_info['token'],'room_name':room_info['room_name'],'session_id':session_id,'producto_id':producto_id,'duracion_maxima_segundos':MAX_SECONDS}
+    except BaseException as error:
+        await _liberar_conexion(ws,session)
+        if isinstance(error,(HTTPException,asyncio.CancelledError)): raise
+        raise error_proveedor('inicio_live',error) from None
+    finally:
+        _ABRIENDO_SESIONES.discard(clave)
 
 
 @router.post(
     "/cambiar-prenda-realtime",
     summary="Cambiar prenda en la sesión WebRTC de Decart en vivo sin reiniciar la cámara",
 )
-async def post_cambiar_prenda_realtime(session_id: str, producto_id: int, empresa_id: int = Depends(exigir_empresa_publica)) -> dict[str, object]:
-    exigir_funcion_empresa(empresa_id, "vestidor")
-    print(f"[Cambiar Prenda] Buscando {session_id}. Sesiones activas: {list(ACTIVE_DECART_SESSIONS.keys())}")
-    sess = ACTIVE_DECART_SESSIONS.get(session_id)
-    if sess and sess.get("empresa_id") != empresa_id:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada.")
-    if not sess or not sess.get("ws") or sess["ws"].closed:
-        print(f"[Cambiar Prenda] No activa o cerrada. sess={sess is not None}")
-        return {"status": "reconnect_needed", "message": "Sesión expirada"}
-
-    img_b64, prompt = await _obtener_imagen_prenda_b64(producto_id, empresa_id)
-
-    ws = sess["ws"]
-    set_img_msg = {
-        "type": "set_image",
-        "image_data": img_b64,
-        "prompt": prompt,
-    }
+async def post_cambiar_prenda_realtime(session_id: str, producto_id: int = Query(..., gt=0), usuario: dict = Depends(exigir_cliente_live)) -> dict[str, object]:
+    empresa_id=int(usuario['empresa_id'])
+    exigir_funcion_empresa(empresa_id,'vestidor')
+    sess=_sesion_propia(session_id,usuario)
+    if not sess or sess['ws'].closed:
+        return {'status':'reconnect_needed','message':'Sesión finalizada'}
+    limitar(usuario,'cambio_live',20)
+    img_b64,prompt=await _obtener_imagen_prenda_b64(producto_id,empresa_id)
     try:
-        await ws.send_str(json.dumps(set_img_msg))
-    except Exception as e:
-        print(f"[Cambiar Prenda] Error al enviar a Decart WS: {e}")
-        ACTIVE_DECART_SESSIONS.pop(session_id, None)
-        return {"status": "reconnect_needed", "message": f"Conexión perdida con Decart: {e}"}
-
-    sess["producto_id"] = producto_id
-    print(f"[Cambiar Prenda] Prenda {producto_id} enviada exitosamente a Decart WS {session_id}")
-    return {"status": "ok", "producto_id": producto_id}
+        await sess['ws'].send_str(json.dumps({'type':'set_image','image_data':img_b64,'prompt':prompt}))
+    except Exception as error:
+        await _cerrar_sesion_live(session_id)
+        raise error_proveedor('cambio_live',error) from None
+    sess['producto_id']=producto_id
+    return {'status':'ok','producto_id':producto_id}
 
 
 @router.post(
     "/pausar-realtime",
     summary="Pausar o cerrar sesión WebRTC de Decart para congelar consumo de créditos",
 )
-async def post_pausar_realtime(session_id: str, empresa_id: int = Depends(exigir_empresa_publica)) -> dict[str, str]:
-    sess = ACTIVE_DECART_SESSIONS.get(session_id)
-    if sess and sess.get("empresa_id") != empresa_id:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada.")
-    sess = ACTIVE_DECART_SESSIONS.pop(session_id, None)
-    if sess:
-        try:
-            ws = sess.get("ws")
-            if ws and not ws.closed:
-                await ws.close()
-            session = sess.get("session")
-            if session and not session.closed:
-                await session.close()
-            task = sess.get("task")
-            if task and not task.done():
-                task.cancel()
-        except Exception as e:
-            print(f"[Pausar Realtime] Error al cerrar: {e}")
-    return {"status": "ok", "message": "Sesión pausada"}
+async def post_pausar_realtime(session_id: str, usuario: dict = Depends(exigir_cliente_live)) -> dict[str,str]:
+    _sesion_propia(session_id,usuario)
+    await _cerrar_sesion_live(session_id)
+    return {'status':'ok','message':'Sesión pausada'}
 
 
 @router.get(
@@ -287,9 +259,11 @@ async def post_pausar_realtime(session_id: str, empresa_id: int = Depends(exigir
     response_class=HTMLResponse,
     summary="Visor interactivo WebRTC 30 FPS para vestidor en vivo con Decart Lucy VTON",
 )
-def get_en_vivo_view(request: Request, producto_id: int = 1, empresa_id: int = Depends(exigir_empresa_publica)) -> HTMLResponse:
+def get_en_vivo_view(request: Request, producto_id: int = Query(1, gt=0), usuario: dict = Depends(exigir_cliente)) -> HTMLResponse:
+    empresa_id=int(usuario["empresa_id"])
     exigir_funcion_empresa(empresa_id, "vestidor", permitir_consulta=True)
-    empresa_codigo = request.headers["X-Empresa-Codigo"].strip().lower()
+    empresa_codigo = usuario["empresa_codigo"]
+    bridge = emitir_bridge(usuario)
     html_content = f"""<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -334,7 +308,7 @@ def get_en_vivo_view(request: Request, producto_id: int = 1, empresa_id: int = D
     let localStream = null;
     let currentRoom = null;
     let currentProductId = {producto_id};
-    const empresaHeaders = {{ 'X-Empresa-Codigo': {json.dumps(empresa_codigo)} }};
+    const empresaHeaders = {{ 'X-Empresa-Codigo': {json.dumps(empresa_codigo)}, 'X-Vestidor-Acceso': {json.dumps(bridge)} }};
     let currentSessionId = null;
     let isPaused = false;
     let manualRot = 0;
@@ -475,6 +449,10 @@ def get_en_vivo_view(request: Request, producto_id: int = 1, empresa_id: int = D
           throw new Error('WebRTC cargando...');
         }}
 
+        if (currentSessionId) {{
+          await fetch('/api/v1/catalogo/vestidor/pausar-realtime?session_id=' + encodeURIComponent(currentSessionId), {{method:'POST', headers:empresaHeaders, keepalive:true}});
+          currentSessionId = null;
+        }}
         if (currentRoom) {{
           try {{ await currentRoom.disconnect(); }} catch (e) {{}}
           currentRoom = null;
@@ -495,6 +473,10 @@ def get_en_vivo_view(request: Request, producto_id: int = 1, empresa_id: int = D
         }}
         const sessionData = await res.json();
         currentSessionId = sessionData.session_id;
+        if (isPaused) {{
+          window.pauseLiveStream();
+          return;
+        }}
 
         // 2. Conectar a sala LiveKit de Decart
         const room = new LivekitClient.Room({{
@@ -523,6 +505,7 @@ def get_en_vivo_view(request: Request, producto_id: int = 1, empresa_id: int = D
         room.on(LivekitClient.RoomEvent.Disconnected, () => {{
           remoteVideo.classList.remove('active');
           remoteVideo.style.display = 'none';
+          statusLabel.textContent = 'Sesión finalizada. Pausa y reanuda para volver a conectar.';
         }});
 
         await room.connect(sessionData.livekit_url, sessionData.token);
@@ -636,7 +619,7 @@ def get_en_vivo_view(request: Request, producto_id: int = 1, empresa_id: int = D
       if (currentSessionId) {{
         fetch('/api/v1/catalogo/vestidor/pausar-realtime?session_id=' + currentSessionId, {{
           method: 'POST',
-          headers: {{ ...empresaHeaders, 'ngrok-skip-browser-warning': 'true' }}
+          headers: {{ ...empresaHeaders, 'ngrok-skip-browser-warning': 'true' }}, keepalive: true
         }}).catch(() => {{}});
       }}
       if (currentRoom) {{
@@ -649,9 +632,15 @@ def get_en_vivo_view(request: Request, producto_id: int = 1, empresa_id: int = D
       statusLabel.textContent = 'Pausado (0 tokens consumidos)';
     }};
 
+    window.suspendVestidor = function() {{
+      window.pauseLiveStream();
+      if (localStream) {{ localStream.getTracks().forEach(t => t.stop()); localStream = null; }}
+      localVideo.srcObject = null;
+    }};
     window.resumeLiveStream = function() {{
       isPaused = false;
-      startDecartSession(currentProductId);
+      if (!localStream) initCamera();
+      else startDecartSession(currentProductId);
     }};
 
     window.switchGarment = async function(productId) {{
@@ -684,22 +673,23 @@ def get_en_vivo_view(request: Request, producto_id: int = 1, empresa_id: int = D
       startDecartSession(productId);
     }};
 
+    window.addEventListener('pagehide', () => {{
+      window.suspendVestidor();
+    }});
     window.addEventListener('load', initCamera);
   </script>
 </body>
 </html>"""
-    return HTMLResponse(content=html_content)
+    return HTMLResponse(content=html_content, headers={"Cache-Control":"no-store, private", "Referrer-Policy":"no-referrer", "X-Frame-Options":"DENY"})
 
 
 @router.post(
     "/token-en-vivo",
     summary="Generar token efímero de sesión para streaming de vestidor en vivo con Decart AI",
 )
-def post_token_en_vivo(duracion_segundos: int = 300, empresa_id: int = Depends(exigir_empresa_publica)) -> dict[str, object]:
-    exigir_funcion_empresa(empresa_id, "vestidor")
-    from app.modules.catalogo.vestidor.vestidor_ia_service import generar_token_webrtc_decart
-
-    return generar_token_webrtc_decart(duracion_segundos=duracion_segundos)
+def post_token_en_vivo(usuario: dict = Depends(exigir_cliente)) -> dict[str,object]:
+    # La API directa de tokens permitía eludir el cierre y límite del servidor.
+    raise HTTPException(410,'Abre el vestidor en vivo para crear una sesión protegida.')
 
 
 try:
@@ -721,12 +711,13 @@ if MULTIPART_DISPONIBLE:
         request: Request,
         response: Response,
         imagen: UploadFile = File(...),
-        producto_id: int = Form(...),
-        talla: str | None = Form(None),
-        color: str | None = Form(None),
+        producto_id: int = Form(..., gt=0),
+        talla: str | None = Form(None, max_length=30),
+        color: str | None = Form(None, max_length=80),
         cliente_id: int | None = Form(None),
-        empresa_id: int = Depends(exigir_empresa_publica),
+        usuario: dict = Depends(exigir_cliente),
     ) -> dict[str, object]:
+        empresa_id=int(usuario["empresa_id"])
         exigir_funcion_empresa(empresa_id, "vestidor")
         response.headers["Cache-Control"] = "no-store, private"
         try:
@@ -740,22 +731,22 @@ if MULTIPART_DISPONIBLE:
                 ),
             ) from error
 
-        contenido = await imagen.read()
-        host_base_url = str(request.base_url).rstrip("/")
-        forwarded_host = request.headers.get("x-forwarded-host")
-        forwarded_proto = request.headers.get("x-forwarded-proto", "https")
-        if forwarded_host:
-            host_base_url = f"{forwarded_proto}://{forwarded_host}"
-
-        return procesar_tryon_ia(
-            imagen_bytes=contenido,
-            producto_id=producto_id,
-            talla=talla,
-            color=color,
-            cliente_id=cliente_id,
-            empresa_id=empresa_id,
-            host_base_url=host_base_url,
-        )
+        try:
+            with foto_en_curso(usuario):
+                contenido=await imagen.read(MAX_IMAGE_BYTES+1)
+                if not contenido: raise HTTPException(400,'Selecciona una imagen válida.')
+                if len(contenido)>MAX_IMAGE_BYTES: raise HTTPException(413,'La foto supera el límite de 10 MB.')
+                resultado=await run_in_threadpool(procesar_tryon_ia, imagen_bytes=contenido, producto_id=producto_id, talla=talla, color=color,
+                    cliente_id=cliente_id_autorizado(usuario), empresa_id=empresa_id)
+                if not await run_in_threadpool(cliente_sigue_vigente, usuario):
+                    raise HTTPException(401,'La sesión terminó. Inicia sesión nuevamente.')
+                return resultado
+        except HTTPException:
+            raise
+        except Exception as error:
+            raise error_proveedor("foto",error) from None
+        finally:
+            await imagen.close()
 
 else:
 
@@ -763,7 +754,7 @@ else:
         "/probar-ia",
         summary="Procesar prueba virtual de prenda sobre foto de usuario con IA",
     )
-    async def post_probar_ia_no_disponible(empresa_id: int = Depends(exigir_empresa_publica)) -> dict[str, object]:
+    async def post_probar_ia_no_disponible(usuario: dict = Depends(exigir_cliente)) -> dict[str, object]:
         raise HTTPException(
             status_code=503,
             detail=(

@@ -127,7 +127,8 @@ os.makedirs("static/images", exist_ok=True)
 
 
 os.makedirs("static/tryon", exist_ok=True)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+from app.modules.catalogo.vestidor.vestidor_seguridad import ArchivosPublicos
+app.mount("/static", ArchivosPublicos(directory="static"), name="static")
 
 
 @app.on_event("startup")
@@ -197,6 +198,9 @@ def health_check() -> dict[str, str]:
 
 @app.on_event('startup')
 async def iniciar_vencimientos():
+    # Permite ejecutar una copia local sin procesar trabajos heredados.
+    if os.getenv('STYLEAR_BACKGROUND_JOBS_ENABLED', 'true').lower() in ('false', '0', 'no'):
+        return
     import asyncio
     from app.modules.reservas.services.vencimiento_service import ejecutar_vencimientos
     app.state.vencimientos=asyncio.create_task(ejecutar_vencimientos())
@@ -301,16 +305,16 @@ def db_check() -> dict[str, str]:
 def descargar_apk():
     import os
     from fastapi.responses import FileResponse
-    paths = [
-        r"c:\MATERIAS\SI2\Presentacion\tr-mobile\build\app\outputs\flutter-apk\app-release.apk",
-        r"c:\MATERIAS\SI2\PrimerParcial\mobile_tr\build\app\outputs\flutter-apk\app-release.apk",
-    ]
+    from pathlib import Path
+    proyecto = Path(__file__).resolve().parents[2]
+    carpeta_apk = proyecto / 'tr-mobile' / 'build' / 'app' / 'outputs' / 'flutter-apk'
+    paths = [carpeta_apk / 'app-release.apk', carpeta_apk / 'app-debug.apk']
     for apk_path in paths:
         if os.path.exists(apk_path):
             return FileResponse(
                 apk_path,
                 media_type="application/vnd.android.package-archive",
-                filename="StyleAR-release.apk",
+                filename="StyleAR.apk",
             )
     return {"error": "APK no encontrado o aún en compilación"}
 

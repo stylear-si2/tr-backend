@@ -62,14 +62,32 @@ def bloquear(cur,e,uid,did=None):
 
 def avisar(cur,d,evento,texto):
     from .notificaciones_service import emitir_cliente
-    cur.execute('SELECT tipo_operacion FROM devolucion WHERE id=%s AND empresa_id=%s',(d['id'],d['empresa_id']))
+    cur.execute('SELECT tipo_operacion,estado FROM devolucion WHERE id=%s AND empresa_id=%s',(d['id'],d['empresa_id']))
     fila=cur.fetchone()
     tipo='CAMBIO' if fila and fila['tipo_operacion']=='CAMBIO' else 'DEVOLUCION'
     categoria='REEMBOLSO' if evento in ('reembolsada','reembolso') else tipo
     if tipo=='CAMBIO' and evento=='solicitud':
         texto='Solicitud de cambio recibida.'
+    nombre = 'Cambio' if tipo == 'CAMBIO' else 'Devolución'
+    estado = fila.get('estado') if fila else None
+    if estado == 'RECHAZADA':
+        titulo = nombre + (' rechazado' if tipo == 'CAMBIO' else ' rechazada')
+        texto = 'La tienda rechazó tu solicitud. Consulta el motivo en el detalle.'
+    elif evento in ('revision', 'inspeccion') and estado in ('APROBADA', 'ESPERA_ACEPTACION'):
+        titulo = nombre + (' aprobado' if tipo == 'CAMBIO' else ' aprobada')
+    else:
+        titulo = {
+            'solicitud': nombre + ': solicitud recibida',
+            'aceptada': 'Devolución confirmada',
+            'aceptacion': 'Condiciones del cambio aceptadas',
+            'cancelado': 'Cambio cancelado',
+            'conversion': 'Cambio convertido en devolución',
+            'pago': 'Pago del cambio confirmado',
+            'completo': 'Cambio completado',
+            'reembolsada': 'Reintegro confirmado',
+        }.get(evento, 'Actualización de ' + tipo.lower())
     return emitir_cliente(cur,d['empresa_id'],d['cliente_id'],f"devolucion:{d['id']}:{evento}",
-                          'Actualización de '+tipo.lower(),texto,categoria,tipo,d['id'])
+                          titulo,texto,categoria,tipo,d['id'])
 
 
 def aceptar(actor,did,monto):

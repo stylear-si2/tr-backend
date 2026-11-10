@@ -207,9 +207,9 @@ def listar_prendas_vestidor(limite: int, empresa_id: int) -> list[dict[str, obje
     return resultado
 
 
-def guardar_sesion_vestidor(request: CrearSesionVestidorRequest, empresa_id: int) -> SesionVestidorResponse:
+def guardar_sesion_vestidor(request: CrearSesionVestidorRequest, empresa_id: int, cliente_id: int | None = None) -> SesionVestidorResponse:
     registro = registrar_sesion_vestidor(
-        cliente_id=None,
+        cliente_id=cliente_id,
         producto_id=request.producto_id,
         variante_id=request.variante_id,
         empresa_id=empresa_id,

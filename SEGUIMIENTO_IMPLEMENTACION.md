@@ -1978,3 +1978,35 @@ Por preferencia del usuario se retiraron las series de contorno del gráfico de 
 El dashboard usa columnas con degradados, iluminación interior, sombra y etiquetas de valor. Los productos más vendidos tienen un ranking con barras anchas, textura segmentada y colores alternos. Los grupos de clientes adoptan barras rellenas con degradado y tarjetas para sus métricas. Los porcentajes, importes, consultas y cálculos no se alteraron.
 
 Verificación: compilación de producción correcta, 46 pruebas unitarias aprobadas, dos recorridos Edge de analítica/dashboard aprobados con AXE sin infracciones, e inspección visual de las capturas actualizadas. Se conserva la respuesta adaptable a pantalla estrecha. Railway no fue modificado.
+
+
+### 2026-11-09 — Vestidor: identidad, privacidad y guardado explícito
+
+Corrección local en stylear-si2 según diagnóstico de Soporte. IA restringida a clientes; sesiones vinculadas a usuario/empresa, límites y cierre por tiempo/revocación. Errores del proveedor sin URLs ni claves. Fotos en trabajo temporal privado; respuesta en memoria y guardado permanente Android solo al pulsar Guardar. /static/tryon bloqueado. 38 pruebas backend y 103 Flutter aprobadas, análisis correcto y APK debug compilado. Decart simulado, sin créditos ni fotos personales; validación física del calce/guardado pendiente. Firebase se mantiene pendiente. Detalle en CORRECCION_VESTIDOR_2026-11-09.md.
+
+## Avisos detallados Android (09/11/2026)
+
+FCM utiliza titulo y mensaje de la notificacion de la empresa correspondiente. Android en primer plano muestra el mismo contenido con texto expandible; se conserva la validacion de sesion y destino. Posventa y delivery muestran titulos por estado. Nueve pruebas backend aprobadas, flutter analyze limpio y APK actualizado en Redmi. Envio dirigido de ensayo aceptado por FCM; recepcion visual pendiente de confirmacion. Tareas automaticas locales siguen desactivadas.
+
+## Carrito, foto y consulta offline (09/11/2026)
+
+- Carrito: el formulario de reserva/pago inicia cerrado y se abre con Continuar; puede cerrarse con Volver a las prendas.
+- Foto: timeout de 90 segundos incluye ahora carga y respuesta completa. Decart tiene un presupuesto de 55 segundos y, si falla, se utiliza el motor local existente. Se presenta el detalle controlado del error del backend. No se guardan fotos automaticamente.
+- Consultas offline: instantaneas cifradas de rutas permitidas, separadas por API, empresa, usuario y roles. Solo se recuperan ante falta de conexion, nunca para sustituir 401/403 u otros rechazos HTTP. No se almacenan tokens en estas instantaneas. Solo datos previamente consultados; recursos remotos no descargados no estan garantizados.
+- Acceso offline despues de reiniciar: tras desbloqueo del telefono se abre la navegacion habitual con datos disponibles. La vigencia sigue siendo de 24 horas. No se habilita acceso remoto con una identidad local; POST/PUT/PATCH/DELETE requieren conexion.
+- Operaciones offline conserva su funcion como registro de solicitudes de reserva y ventas presenciales en efectivo. Las reservas pendientes se validan en el servidor al sincronizar; no garantizan stock antes de la confirmacion. No hay cola de cargos Stripe ni cobros automaticos al reconectar; se usa Checkout online, no Stripe Terminal.
+- Verificacion: flutter analyze limpio, 106 pruebas Flutter y 34 pruebas del vestidor aprobadas. Probador real y navegacion offline pendientes de prueba manual en el Redmi con el APK actualizado.
+
+## Ajuste responsive del carrito (09/11/2026)
+Formulario dentro del espacio restante con desplazamiento propio, sin porcentaje de altura de pantalla. Al continuar se oculta la lista de prendas y se conserva Volver a las prendas. El total permite salto de linea. Prueba de widget aprobada a 360x640 con texto ampliado y barras superior e inferior.
+
+
+## Web: usuarios por rol, empleados y bandeja (09/11/2026)
+
+Usuarios abre un panel de tarjetas por rol, acceso a todas las cuentas y cuentas sin roles activos. La tabla y sus filtros aparecen al entrar. El filtro de rol se aplica en el backend antes de contar/paginar y conserva el alcance de empresa y permisos. Las cuentas con varios roles aparecen en cada grupo correspondiente. La vista SaaS conserva su selector de empresa.
+
+Empleados abre tarjetas por tipo laboral (encargados, caja, ventas), equipo completo y sin roles activos. La busqueda se combina con el tipo elegido. Se conserva la gestion existente y el foco de teclado pasa al encabezado de la lista al entrar y vuelve al panel al regresar.
+
+Notificaciones incorpora cabecera, filtros en tarjeta, botones con iconos, indicadores de lectura, colores por categoria y preferencias organizadas. Se mantienen los endpoints y acciones existentes. Diseno adaptable a ventanas estrechas.
+
+Validacion: compilacion web aprobada; cuatro pruebas existentes de notificaciones aprobadas; filtro CLIENTE comprobado contra la copia local (cinco cuentas, incluidos usuarios con varios roles). AXE sin infracciones WCAG A/AA en usuarios, empleados y notificaciones, y con avisos y preferencias a 1280 y 390 px; sin desbordamiento horizontal en esas vistas de notificaciones. Sin despliegue ni cambios en Presentacion.
