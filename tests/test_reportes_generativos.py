@@ -96,3 +96,61 @@ def test_tabla_grafico_y_archivos_conservan_ranking_y_totales(contexto,monkeypat
 def test_filtros_no_aplicables_se_rechazan():
     with pytest.raises(ValueError):
         ReporteRequest(tipo='USUARIOS',fecha_desde=date(2026,9,1),fecha_hasta=date(2026,9,30),producto_id=12)
+
+
+def test_top_por_sucursal_no_cambia_a_ventas(contexto):
+    res=service.interpretar('Los 10 productos más vendidos durante los últimos tres meses agrupados por sucursal',2)
+    assert res['interpretado'],res
+    f=res['filtros']
+    assert f['tipo']=='PRODUCTOS_MAS_VENDIDOS'
+    assert f['por_sucursal'] is True and f['limite']==10
+    assert f['fecha_desde']=='2026-09-01' and f['fecha_hasta']=='2026-11-10'
+    req=ReporteRequest(**f)
+    sql,params=consulta(req,2)
+    assert 'PARTITION BY sucursal_id' in sql and params['empresa']==2
+    assert 'posicion <= %(limite)s' in sql
+
+
+def test_ranking_misma_prenda_en_dos_sucursales_no_se_mezcla(contexto,monkeypatch):
+    filas=[dict(sucursal_id=1,sucursal='Centro',posicion=1,producto_id=1,producto='Polera',unidades=8,importe=Decimal('80')),
+           dict(sucursal_id=2,sucursal='Norte',posicion=1,producto_id=1,producto='Polera',unidades=3,importe=Decimal('30'))]
+    req=ReporteRequest(tipo='PRODUCTOS_MAS_VENDIDOS',fecha_desde=date(2026,9,1),fecha_hasta=date(2026,11,10),por_sucursal=True)
+    monkeypatch.setattr(service,'consultar_reporte',lambda *a:filas)
+    reporte=service.generar_reporte(req,2)
+    detalle=paginar(filas,req,(1,1))
+    assert len(reporte['serie_grafico'])==2
+    assert [p['valor'] for p in detalle['serie_grafico']]==['8','3']
+    assert detalle['resumen']['total_filas']==2
+    wb=load_workbook(BytesIO(crear_excel(reporte)))
+    assert wb['Datos'].max_row==3
+    assert crear_pdf(reporte).startswith(b'%PDF-')
+
+
+def test_intencion_productos_prevalece_sobre_proveedor(contexto,monkeypatch):
+    monkeypatch.setattr(service,'_interpretar_base',lambda *a:dict(interpretado=True,filtros=dict(tipo='VENTAS_POR_SUCURSAL',fecha_desde='2026-11-01',fecha_hasta='2026-11-10')))
+    res=service.interpretar('Los diez productos más vendidos por sucursal',2)
+    assert res['filtros']['tipo']=='PRODUCTOS_MAS_VENDIDOS'
+    assert res['filtros']['por_sucursal'] is True
+
+
+@pytest.mark.parametrize('frase',[
+    'dame el top 10 de las últimas ventas en los últimos 3 meses de la sucursal Banzer',
+    'dame el top 10 de las últimas ventas en los últimos 3 meses de la sucursal Santa Cruz de la sierra suc Banzer',
+])
+def test_sucursal_abreviada_capturas(contexto,monkeypatch,frase):
+    monkeypatch.setattr(service,'listar_sucursales',lambda e:[dict(id=3,nombre='Suc Banzer'),dict(id=4,nombre='Suc Pirai')])
+    res=service.interpretar(frase,2)
+    assert res['interpretado'],res
+    assert res['filtros']['sucursal_id']==3
+
+
+def test_sucursal_ambigua_no_se_convierte_en_todas(contexto,monkeypatch):
+    monkeypatch.setattr(service,'listar_sucursales',lambda e:[dict(id=3,nombre='Banzer Norte'),dict(id=4,nombre='Banzer Sur')])
+    res=service.interpretar('Ventas de la sucursal Banzer',2)
+    assert not res['interpretado'] and res['filtros'] is None
+
+
+def test_sucursal_explicita_corrige_omision_del_proveedor(contexto,monkeypatch):
+    monkeypatch.setattr(service,'listar_sucursales',lambda e:[dict(id=3,nombre='Suc Banzer')])
+    monkeypatch.setattr(service,'_interpretar_base',lambda *a:dict(interpretado=True,filtros=dict(tipo='VENTAS',fecha_desde='2026-11-01',fecha_hasta='2026-11-10',sucursal_id=None)))
+    assert service.interpretar('Ventas de la sucursal Banzer',2)['filtros']['sucursal_id']==3

@@ -145,6 +145,35 @@ def _normalizar(texto: str) -> str:
     return "".join(c for c in texto if unicodedata.category(c) != "Mn")
 
 
+def _resolver_sucursal(texto, sucursales):
+    """Resuelve nombres completos o abreviados solo dentro del ámbito autorizado."""
+    normal = _normalizar(texto)
+    tokens = set(re.findall(r"[a-z0-9]+", normal))
+    comunes = {'suc', 'sucursal', 'sucursales', 'de', 'del', 'la', 'el', 'las', 'los',
+               'en', 'av', 'avenida', 'calle', 'santa', 'cruz', 'sierra'}
+    candidatos = []
+    for sucursal in sucursales:
+        nombre = _normalizar(str(sucursal['nombre']))
+        propios = set(re.findall(r"[a-z0-9]+", nombre)) - comunes
+        if propios and propios <= tokens:
+            candidatos.append(sucursal)
+    if len(candidatos) == 1:
+        return candidatos[0]['id'], None
+    # Admite una parte distintiva, por ejemplo Banzer para Suc Banzer.
+    if not candidatos:
+        candidatos = [s for s in sucursales if
+            (set(re.findall(r"[a-z0-9]+", _normalizar(str(s['nombre'])))) - comunes) & tokens]
+    if len(candidatos) == 1:
+        return candidatos[0]['id'], None
+    if candidatos:
+        return None, 'La sucursal es ambigua: ' + ', '.join(str(s['nombre']) for s in candidatos) + '. Indica el nombre completo.'
+    especifica = bool(re.search(r'\b(?:de la|en la|de|en)\s+sucursal\b', normal))
+    colectiva = any(p in normal for p in ('todas las sucursales', 'por sucursal', 'cada sucursal', 'entre sucursales', 'las sucursales'))
+    if especifica or ('sucursal' in normal and not colectiva):
+        return None, 'No se reconoció la sucursal. Indica su nombre o selecciónala en los filtros.'
+    return None, None
+
+
 def _interpretar_por_reglas(texto: str, empresa_id: int, sucursal_permitida=None) -> dict[str, object]:
     normal = _normalizar(texto)
     hoy = datetime.now(ZoneInfo("America/La_Paz")).date()
@@ -206,15 +235,10 @@ def _interpretar_por_reglas(texto: str, empresa_id: int, sucursal_permitida=None
     if tipo == "USUARIOS" and not tiene_fecha_explicita:
         inicio = date(2020, 1, 1)
         fin = hoy
-    sucursal_id = None
     sucursales = [s for s in listar_sucursales(empresa_id) if sucursal_permitida is None or s['id']==sucursal_permitida]
-    for sucursal in sucursales:
-        nombre = _normalizar(str(sucursal["nombre"]))
-        if nombre in normal:
-            sucursal_id = sucursal["id"]
-            break
-    if "sucursal" in normal and sucursal_id is None and not any(p in normal for p in ("todas", "por sucursal", "las sucursales", "entre sucursales")):
-        return {"interpretado": False, "advertencias": ["No se reconoció la sucursal. Selecciónala en los filtros."], "filtros": None}
+    sucursal_id, error_sucursal = _resolver_sucursal(texto, sucursales)
+    if error_sucursal:
+        return dict(interpretado=False, advertencias=[error_sucursal], filtros=None)
     estado = None
     if "pendiente" in normal:
         estado = "PENDIENTE" if tipo in {"PAGOS", "DELIVERIES"} else "PENDIENTE_PAGO" if tipo == "VENTAS" else "PENDIENTE"
@@ -279,16 +303,26 @@ def _interpretar_base(texto: str, empresa_id: int, sucursal_permitida=None) -> d
 def interpretar(texto: str, empresa_id: int, sucursal_permitida=None) -> dict[str, object]:
     if any(x in _normalizar(texto) for x in ('ganancia','utilidad','rentabilidad','salario','impuesto')):
         return dict(interpretado=False,filtros=None,advertencias=['Ese cálculo no está disponible. Puedes consultar ventas, ingresos, inventario, reservas o pagos.'])
+    sucursales = [s for s in listar_sucursales(empresa_id) if sucursal_permitida is None or s['id']==sucursal_permitida]
+    sucursal_resuelta, error_sucursal = _resolver_sucursal(texto, sucursales)
+    if error_sucursal:
+        return dict(interpretado=False, filtros=None, advertencias=[error_sucursal])
     resultado = _interpretar_base(texto, empresa_id, sucursal_permitida)
     normal = _normalizar(texto)
     # Intenciones que el contrato representa de forma explícita, incluso en el respaldo local.
     tipo = ('INGRESOS_POR_CATEGORIA' if 'categoria' in normal and any(x in normal for x in ('ingreso','generaron','recaud','por categoria'))
             else 'VENTAS_POR_SUCURSAL' if 'sucursal' in normal and any(x in normal for x in ('agrupad','compar','por sucursal')) else None)
+    if resultado.get('filtros') and re.search(r'productos?\s+(?:mas|mejor)\s+vendidos?', normal):
+        resultado['filtros']['tipo'] = 'PRODUCTOS_MAS_VENDIDOS'
+    if (resultado.get('filtros') or {}).get('tipo') == 'PRODUCTOS_MAS_VENDIDOS':
+        tipo = None
     if tipo and not resultado.get('interpretado'):
         resultado = _interpretar_por_reglas('ventas ' + texto, empresa_id, sucursal_permitida)
     if not resultado.get('interpretado') or not resultado.get('filtros'):
         return resultado
     f = dict(resultado['filtros'])
+    if sucursal_resuelta is not None:
+        f['sucursal_id'] = sucursal_resuelta
     if tipo:
         if f.get('estado') not in (None,'COMPLETADA','PAGADO'):
             return dict(interpretado=False,filtros=None,advertencias=['Los reportes agrupados de ingresos y ventas por sucursal incluyen ventas completadas. Para otros estados usa el detalle de ventas.'])
@@ -307,6 +341,8 @@ def interpretar(texto: str, empresa_id: int, sucursal_permitida=None) -> dict[st
         f['fecha_desde'] = date(mes//12,mes%12+1,1).isoformat()
         f['fecha_hasta'] = hoy.isoformat()
     top = re.search(r'\b(?:top|primeros|los)\s+(\d+|diez|cinco|veinte)\s*(?:productos)?',normal)
+    if f['tipo']=='PRODUCTOS_MAS_VENDIDOS' and any(x in normal for x in ('por sucursal','cada sucursal','las sucursales','entre sucursales')):
+        f['por_sucursal'] = True
     if f['tipo']=='PRODUCTOS_MAS_VENDIDOS' and top:
         n = top.group(1)
         f['limite'] = int(n) if n.isdigit() else {'diez':10,'cinco':5,'veinte':20}[n]
@@ -381,7 +417,7 @@ def generar_reporte(request: ReporteRequest, empresa_id: int) -> dict[str, objec
                 key+=' · '+str(row.get('moneda') or 'BOB')
             serie[key] += float(row.get("costo_delivery") or 0) if request.tipo=="DELIVERIES" else float(row.get("total", row.get("monto_total", 1)) or (0 if request.tipo in {"VENTAS", "RESERVAS", "PAGOS"} else 1))
     elif request.tipo == "PRODUCTOS_MAS_VENDIDOS":
-        serie = {row['producto']: int(row['unidades']) for row in rows}
+        serie = {(row['sucursal'] + ' · ' + row['producto'] if request.por_sucursal else row['producto']): int(row['unidades']) for row in rows}
     elif request.tipo in {'VENTAS_POR_SUCURSAL','INGRESOS_POR_CATEGORIA'}:
         serie = {str(row['periodo'])+' · '+row['sucursal'] if request.tipo=='VENTAS_POR_SUCURSAL' else row['categoria']: float(row['importe']) for row in rows}
     else:

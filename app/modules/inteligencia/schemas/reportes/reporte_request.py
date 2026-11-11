@@ -32,6 +32,7 @@ class ReporteRequest(BaseModel):
     categoria_id: int | None = Field(default=None, gt=0)
     producto_id: int | None = Field(default=None, gt=0)
     limite: int = Field(default=10, ge=1, le=100)
+    por_sucursal: bool = False
     solo_bajo_stock: bool = False
     estado: str | None = Field(default=None, max_length=40)
     metodo_pago: str | None = Field(default=None, max_length=40)
@@ -43,6 +44,8 @@ class ReporteRequest(BaseModel):
 
     @model_validator(mode="after")
     def validar_rango(self):
+        if self.por_sucursal and self.tipo != "PRODUCTOS_MAS_VENDIDOS":
+            raise ValueError("El ranking por sucursal corresponde a productos más vendidos.")
         if self.tipo in {'VENTAS_POR_SUCURSAL','INGRESOS_POR_CATEGORIA','PRODUCTOS_MAS_VENDIDOS'} and self.estado not in (None,'COMPLETADA'):
             raise ValueError('Este reporte agrupa únicamente ventas completadas.')
         if self.solo_bajo_stock and self.tipo != 'INVENTARIO':

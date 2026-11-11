@@ -32,6 +32,15 @@ def consulta(request, empresa):
           AND (%(producto)s::bigint IS NULL OR producto_id=%(producto)s))
     """
     if request.tipo == 'PRODUCTOS_MAS_VENDIDOS':
+        if request.por_sucursal:
+            return base + ''', totales AS (
+                SELECT sucursal_id,sucursal,producto_id,producto,SUM(unidades)::bigint unidades,
+                    ROUND(COALESCE(SUM(importe),0),2) importe FROM seleccion
+                GROUP BY sucursal_id,sucursal,producto_id,producto), ranking AS (
+                SELECT *,ROW_NUMBER() OVER(PARTITION BY sucursal_id
+                    ORDER BY unidades DESC,producto,producto_id) posicion FROM totales)
+                SELECT sucursal_id,sucursal,posicion,producto_id,producto,unidades,importe FROM ranking
+                WHERE posicion <= %(limite)s ORDER BY sucursal,sucursal_id,posicion''', params
         return base + '''SELECT producto_id,producto,SUM(unidades)::bigint unidades,
             ROUND(COALESCE(SUM(importe),0),2) importe FROM seleccion GROUP BY producto_id,producto
             ORDER BY unidades DESC,producto,producto_id LIMIT %(limite)s''', params
@@ -62,6 +71,7 @@ def paginar(filas, request, paginacion):
     serie = defaultdict(Decimal)
     for f in filas:
         label = (str(f['periodo']) + ' · ' + f['sucursal'] if request.tipo == 'VENTAS_POR_SUCURSAL'
+                 else (f["sucursal"] + ' · ' + f['producto']) if request.tipo == 'PRODUCTOS_MAS_VENDIDOS' and request.por_sucursal
                  else f.get('categoria', f.get('producto', '')))
         serie[label] += Decimal(f['unidades'] if request.tipo == 'PRODUCTOS_MAS_VENDIDOS' else f['importe'])
     total = sum((Decimal(f['importe']) for f in filas), Decimal(0))
