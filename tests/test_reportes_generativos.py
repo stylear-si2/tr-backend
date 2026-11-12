@@ -154,3 +154,14 @@ def test_sucursal_explicita_corrige_omision_del_proveedor(contexto,monkeypatch):
     monkeypatch.setattr(service,'listar_sucursales',lambda e:[dict(id=3,nombre='Suc Banzer')])
     monkeypatch.setattr(service,'_interpretar_base',lambda *a:dict(interpretado=True,filtros=dict(tipo='VENTAS',fecha_desde='2026-11-01',fecha_hasta='2026-11-10',sucursal_id=None)))
     assert service.interpretar('Ventas de la sucursal Banzer',2)['filtros']['sucursal_id']==3
+
+
+def test_frase_exacta_docente_sucursales_plural(contexto):
+    res=service.interpretar('Muéstrame los 10 productos más vendidos en los últimos 3 meses agrupados por sucursales.',2)
+    assert res['interpretado'],res
+    f=res['filtros']
+    assert f['tipo']=='PRODUCTOS_MAS_VENDIDOS'
+    assert f['por_sucursal'] is True
+    assert f['sucursal_id'] is None
+    assert f['limite']==10
+    assert f['fecha_desde']=='2026-09-01'
