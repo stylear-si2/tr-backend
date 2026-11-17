@@ -64,6 +64,7 @@ VERSIONED_SQL_FILES = [
     ("2026_11_08_cu26_contratacion_planes", "database/migracion_cu26_contratacion_planes.sql"),
     ("2026_11_09_comprobantes_pago", "database/migracion_comprobantes_pago.sql"),
     ("2026_11_10_empresa_apariencia", "database/migracion_empresa_apariencia.sql"),
+    ("2026_11_16_ventas_historicas_reportes", "database/migracion_cu22_ventas_historicas_reportes.sql"),
 ]
 
 
